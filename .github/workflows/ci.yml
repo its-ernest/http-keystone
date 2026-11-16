@@ -39,7 +39,24 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race ./...
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Report coverage
+        run: go tool cover -func=coverage.out | tail -1
+
+      - name: Enforce cache and internal coverage
+        run: |
+          failed=0
+          for pkg in ./cache ./internal; do
+            go test -race -covermode=atomic -coverprofile=cover.out "$pkg" >/dev/null
+            pct=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+            echo "$pkg: ${pct}%"
+            if ! awk -v p="$pct" 'BEGIN { exit (p < 80) ? 1 : 0 }'; then
+              echo "::error::$pkg coverage ${pct}% is below the 80% threshold"
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Build example module
         working-directory: _examples/cache/otp_code_verification
