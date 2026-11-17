@@ -86,11 +86,13 @@ type Config struct {
 <a name="Rule"></a>
 ## type Rule
 
-Rule defines the "heat" points added for specific path patterns. Pattern supports suffix wildcards like "/admin\*".
+Rule defines the "heat" points added for specific path patterns. Path supports exact matches (e.g., "/.env") and a trailing "\*" wildcard on a path-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
 
 ```go
 type Rule struct {
-    // Path is the URL path to match (supports wildcards via Echo's path matching)
+    // Path is the URL path to match. It supports exact matches and a
+    // trailing "*" wildcard on a path-segment boundary; Echo's router is
+    // not involved. Matching is case-sensitive and ignores query strings.
     Path string
 
     // Method is the HTTP method to match (GET, POST, etc.). Empty means match all.
