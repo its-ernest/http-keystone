@@ -10,6 +10,7 @@ import (
 
 	"github.com/its-ernest/http-keystone/store"
 	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 )
 
 type (
@@ -32,6 +33,21 @@ type (
 
 	// Config defines the settings for the abuse detection middleware.
 	Config struct {
+		// Skipper defines a function to skip middleware. Defaults to
+		// middleware.DefaultSkipper.
+		Skipper middleware.Skipper
+
+		// KeyFunc derives the identity used to track heat. The returned string
+		// is appended to "abuse:heat:" as the store key.
+		//
+		// The default is c.RealIP(). Note that c.RealIP() trusts
+		// X-Forwarded-For / X-Real-IP when Echo has an IPExtractor configured,
+		// and Echo's default extracts the header values without verification.
+		// Behind a proxy, configure e.IPExtractor (see
+		// echo.ExtractIPFromXFFHeader) or set KeyFunc to something the client
+		// cannot choose. See NewForwardedIPKeyFunc for a ready-made helper.
+		KeyFunc func(c *echo.Context) string
+
 		Store store.Counter
 		// Threshold is the heat score at which requests are rejected.
 		// Values <= 0 fall back to DefaultConfig.Threshold (100) so a zero
@@ -61,6 +77,8 @@ type (
 
 // DefaultConfig provides the standard settings for abuse detection middleware.
 var DefaultConfig = Config{
+	Skipper:   middleware.DefaultSkipper,
+	KeyFunc:   func(c *echo.Context) string { return c.RealIP() },
 	Threshold: 100,
 	Cooldown:  30 * time.Minute,
 	MaxDelay:  2 * time.Second,
@@ -89,6 +107,12 @@ func New(config Config) echo.MiddlewareFunc {
 	if config.Cooldown <= 0 {
 		config.Cooldown = DefaultConfig.Cooldown
 	}
+	if config.Skipper == nil {
+		config.Skipper = DefaultConfig.Skipper
+	}
+	if config.KeyFunc == nil {
+		config.KeyFunc = DefaultConfig.KeyFunc
+	}
 	if config.MaxDelay <= 0 {
 		config.MaxDelay = DefaultConfig.MaxDelay
 	}
@@ -104,9 +128,19 @@ func New(config Config) echo.MiddlewareFunc {
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
+			if config.Skipper(c) {
+				return next(c)
+			}
+
 			ctx := c.Request().Context()
-			clientIP := c.RealIP()
-			key := "abuse:heat:" + clientIP
+
+			// The identity is deliberately pluggable: c.RealIP() alone trusts
+			// proxy headers and lets a client pick its own abuse key.
+			clientID := config.KeyFunc(c)
+			if clientID == "" {
+				clientID = c.RealIP()
+			}
+			key := "abuse:heat:" + clientID
 
 			// 1. Fetch current heat
 			currentScore, _ := config.Store.Get(ctx, key)
@@ -187,5 +221,39 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// NewForwardedIPKeyFunc returns a KeyFunc that resolves the client IP from
+// X-Forwarded-For, trusting only the direct peer when that peer is a trusted
+// proxy. Pass echo.TrustIPRange (and the other echo.Trust* options) to describe
+// your proxies; by default loopback, link-local and private ranges are trusted.
+//
+// Use it when the middleware runs behind a reverse proxy and you do not want to
+// set echo.Echo.IPExtractor globally:
+//
+//	e.Use(abuse.New(abuse.Config{
+//		Store:   counter,
+//		KeyFunc: abuse.NewForwardedIPKeyFunc(echo.TrustIPRange(proxyCIDR)),
+//	}))
+//
+// Without trusted proxies (for example when the app faces the internet
+// directly), use echo.ExtractIPDirect with NewIPKeyFunc so headers are ignored
+// completely.
+func NewForwardedIPKeyFunc(options ...echo.TrustOption) func(c *echo.Context) string {
+	extractor := echo.ExtractIPFromXFFHeader(options...)
+	return func(c *echo.Context) string {
+		return extractor(c.Request())
+	}
+}
+
+// NewIPKeyFunc adapts an echo.IPExtractor into a KeyFunc. A nil extractor falls
+// back to c.RealIP().
+func NewIPKeyFunc(extractor echo.IPExtractor) func(c *echo.Context) string {
+	if extractor == nil {
+		return func(c *echo.Context) string { return c.RealIP() }
+	}
+	return func(c *echo.Context) string {
+		return extractor(c.Request())
 	}
 }
