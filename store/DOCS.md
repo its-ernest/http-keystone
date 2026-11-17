@@ -12,8 +12,16 @@ Package store provides the underlying persistence and locking mechanisms for the
 
 - [Variables](<#variables>)
 - [type Counter](<#Counter>)
-  - [func NewMemoryCounter\(\) Counter](<#NewMemoryCounter>)
 - [type Entry](<#Entry>)
+- [type MemoryCounter](<#MemoryCounter>)
+  - [func NewMemoryCounter\(\) \*MemoryCounter](<#NewMemoryCounter>)
+  - [func NewMemoryCounterWithLimit\(maxEntries int\) \*MemoryCounter](<#NewMemoryCounterWithLimit>)
+  - [func \(m \*MemoryCounter\) Close\(\) error](<#MemoryCounter.Close>)
+  - [func \(m \*MemoryCounter\) Get\(\_ context.Context, key string\) \(int, error\)](<#MemoryCounter.Get>)
+  - [func \(m \*MemoryCounter\) Increment\(ctx context.Context, key string, n int, ttl time.Duration\) \(int, error\)](<#MemoryCounter.Increment>)
+  - [func \(m \*MemoryCounter\) Len\(\) int](<#MemoryCounter.Len>)
+  - [func \(m \*MemoryCounter\) Reset\(\_ context.Context, key string\) error](<#MemoryCounter.Reset>)
+  - [func \(m \*MemoryCounter\) StartEvictor\(ctx context.Context, interval time.Duration\)](<#MemoryCounter.StartEvictor>)
 - [type MemoryStore](<#MemoryStore>)
   - [func NewMemoryStore\(\) \*MemoryStore](<#NewMemoryStore>)
   - [func \(m \*MemoryStore\) Delete\(\_ context.Context, key string\) error](<#MemoryStore.Delete>)
@@ -88,15 +96,6 @@ type Counter interface {
 }
 ```
 
-<a name="NewMemoryCounter"></a>
-### func [NewMemoryCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L16>)
-
-```go
-func NewMemoryCounter() Counter
-```
-
-NewMemoryCounter returns a new thread\-safe memory\-based Counter.
-
 <a name="Entry"></a>
 ## type [Entry](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L22-L26>)
 
@@ -109,6 +108,89 @@ type Entry struct {
     Body   []byte              `json:"body"`
 }
 ```
+
+<a name="MemoryCounter"></a>
+## type [MemoryCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L12-L21>)
+
+MemoryCounter is a thread\-safe in\-memory Counter. Entries are stored with an expiry and are removed lazily on access, by an optional background evictor \(see StartEvictor\), or when MaxEntries is exceeded.
+
+```go
+type MemoryCounter struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewMemoryCounter"></a>
+### func [NewMemoryCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L24>)
+
+```go
+func NewMemoryCounter() *MemoryCounter
+```
+
+NewMemoryCounter returns a new thread\-safe memory\-based Counter.
+
+<a name="NewMemoryCounterWithLimit"></a>
+### func [NewMemoryCounterWithLimit](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L35>)
+
+```go
+func NewMemoryCounterWithLimit(maxEntries int) *MemoryCounter
+```
+
+NewMemoryCounterWithLimit returns a MemoryCounter that keeps at most maxEntries keys. When the limit is reached, the key that expires first is evicted to make room for the new one. A maxEntries value \<= 0 means unlimited.
+
+<a name="MemoryCounter.Close"></a>
+### func \(\*MemoryCounter\) [Close](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L141>)
+
+```go
+func (m *MemoryCounter) Close() error
+```
+
+Close stops a background evictor started by StartEvictor. It is safe to call multiple times and does not invalidate the counter.
+
+<a name="MemoryCounter.Get"></a>
+### func \(\*MemoryCounter\) [Get](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L82>)
+
+```go
+func (m *MemoryCounter) Get(_ context.Context, key string) (int, error)
+```
+
+Get returns the current count for key. An expired key is deleted and 0 is returned.
+
+<a name="MemoryCounter.Increment"></a>
+### func \(\*MemoryCounter\) [Increment](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L43>)
+
+```go
+func (m *MemoryCounter) Increment(ctx context.Context, key string, n int, ttl time.Duration) (int, error)
+```
+
+
+
+<a name="MemoryCounter.Len"></a>
+### func \(\*MemoryCounter\) [Len](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L97>)
+
+```go
+func (m *MemoryCounter) Len() int
+```
+
+Len returns the number of tracked keys, excluding expired ones.
+
+<a name="MemoryCounter.Reset"></a>
+### func \(\*MemoryCounter\) [Reset](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L72>)
+
+```go
+func (m *MemoryCounter) Reset(_ context.Context, key string) error
+```
+
+
+
+<a name="MemoryCounter.StartEvictor"></a>
+### func \(\*MemoryCounter\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L108>)
+
+```go
+func (m *MemoryCounter) StartEvictor(ctx context.Context, interval time.Duration)
+```
+
+StartEvictor launches a background goroutine that removes expired keys every interval, stopping when ctx is done or Close is called. It is safe to call more than once; later calls replace the previous evictor.
 
 <a name="MemoryStore"></a>
 ## type [MemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L20-L23>)
