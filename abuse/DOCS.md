@@ -18,7 +18,7 @@ Package abuse provides behavioral analysis middleware for Echo v5. It tracks cli
 
 ## Variables
 
-<a name="DefaultConfig"></a>
+<a name="DefaultConfig"></a>DefaultConfig provides the standard settings for abuse detection middleware.
 
 ```go
 var DefaultConfig = Config{
@@ -31,7 +31,7 @@ var DefaultConfig = Config{
 ```
 
 <a name="New"></a>
-## func New
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L55>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -45,38 +45,52 @@ New returns an Echo middleware that monitors and limits abusive behavior. It sho
 
 
 ```go
-e := echo.New()
+package main
 
-// Instant-ban on sensitive files, warn on API spam
-e.Use(abuse.New(abuse.Config{
-	Threshold: 100,
-	Rules: []abuse.Rule{
-		// immediate ban for ANY attempt on .env
-		{Path: "/.env", Score: 100},
+import (
+	"github.com/its-ernest/http-keystone/abuse"
+	"github.com/labstack/echo/v5"
+)
 
-		// heavy score only for POST requests to login (brute force protection)
-		{Path: "/api/v1/login", Method: "POST", Score: 20},
+func main() {
+	e := echo.New()
 
-		// light score for general API exploration
-		{Path: "/api/v1/*", Method: "GET", Score: 2},
-	},
-}))
+	// Instant-ban on sensitive files, warn on API spam
+	e.Use(abuse.New(abuse.Config{
+		Threshold: 100,
+		Rules: []abuse.Rule{
+			// immediate ban for ANY attempt on .env
+			{Path: "/.env", Score: 100},
+
+			// heavy score only for POST requests to login (brute force protection)
+			{Path: "/api/v1/login", Method: "POST", Score: 20},
+
+			// light score for general API exploration
+			{Path: "/api/v1/*", Method: "GET", Score: 2},
+		},
+	}))
+}
 ```
 
 </p>
 </details>
 
 <a name="Config"></a>
-## type Config
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L28-L41>)
 
 Config defines the settings for the abuse detection middleware.
 
 ```go
 type Config struct {
-    Store     store.Counter
+    Store store.Counter
+    // Threshold is the heat score at which requests are rejected.
+    // Values <= 0 fall back to DefaultConfig.Threshold (100) so a zero
+    // Config can never block every request.
     Threshold int
     Rules     []Rule
-    Cooldown  time.Duration
+    // Cooldown is how long heat is remembered. Values <= 0 fall back to
+    // DefaultConfig.Cooldown (30 minutes).
+    Cooldown time.Duration
     // EnableDelay adds latency to suspicious requests instead of a hard block.
     EnableDelay  bool
     ErrorHandler func(c *echo.Context, score int) error
@@ -84,7 +98,7 @@ type Config struct {
 ```
 
 <a name="Rule"></a>
-## type Rule
+## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L16-L25>)
 
 Rule defines the "heat" points added for specific path patterns. Path supports exact matches (e.g., "/.env") and a trailing "\*" wildcard on a path-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
 
