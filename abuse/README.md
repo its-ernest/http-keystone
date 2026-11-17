@@ -117,10 +117,80 @@ compatible rules and thresholds.
 
 ---
 
+## Client identity and proxies
+
+Heat is tracked per identity. The default `KeyFunc` is `c.RealIP()`, and Echo
+resolves that from the request. **If you run behind a proxy and do not configure
+how the real IP is derived, clients can choose their own abuse key**:
+
+```
+X-Forwarded-For: 1.2.3.4      -> evade its own score
+X-Forwarded-For: <victim-ip>  -> get a third party blocked
+```
+
+Two supported ways to fix it:
+
+```go
+// 1. Tell Echo which proxies to trust (recommended; affects c.RealIP()).
+e.IPExtractor = echo.ExtractIPFromXFFHeader(
+	echo.TrustIPRange(proxyCIDR), // your load balancer / ingress range
+)
+
+e.Use(abuse.New(abuse.Config{Store: counter}))
+```
+
+```go
+// 2. Keep the middleware independent of the Echo instance.
+e.Use(abuse.New(abuse.Config{
+	Store:   counter,
+	KeyFunc: abuse.NewForwardedIPKeyFunc(echo.TrustIPRange(proxyCIDR)),
+}))
+```
+
+Requests coming directly from the internet need no `X-Forwarded-For` handling:
+
+```go
+e.Use(abuse.New(abuse.Config{
+	Store:   counter,
+	KeyFunc: abuse.NewIPKeyFunc(echo.ExtractIPDirect()), // headers ignored
+}))
+```
+
+`KeyFunc` can return anything stable, for example a tenant ID plus the client
+IP, which avoids cross-tenant bans behind shared NAT:
+
+```go
+KeyFunc: func(c *echo.Context) string {
+	return c.Get("tenant") + "|" + c.RealIP()
+},
+```
+
+If `KeyFunc` returns an empty string the middleware falls back to `c.RealIP()`.
+
+### Skipping routes
+
+`Skipper` defaults to `middleware.DefaultSkipper`. Exclude health checks and
+metrics so they never accumulate heat:
+
+```go
+e.Use(abuse.New(abuse.Config{
+	Store: counter,
+	Skipper: func(c *echo.Context) bool {
+		p := c.Request().URL.Path
+		return p == "/healthz" || p == "/metrics"
+	},
+	Rules: []abuse.Rule{{Path: "/.env", Score: 100}},
+}))
+```
+
+---
+
 ## Configuration Options
 
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `Skipper` | `middleware.Skipper` | `DefaultSkipper` | Skip the middleware for specific requests (health checks, metrics). |
+| `KeyFunc` | `func(*echo.Context) string` | `c.RealIP()` | Identity used for heat tracking. Configure it (or `e.IPExtractor`) behind proxies. |
 | `Store` | `store.Counter` | **Required** | Atomic counter backend (Memory or Redis). |
 | `Threshold` | `int` | `100` | The score at which a client is fully blocked. `<= 0` uses the default. |
 | `Rules` | `[]Rule` | `nil` | List of paths and their associated penalty scores. Copied by `New`. |
