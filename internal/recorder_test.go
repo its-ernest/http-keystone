@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -187,4 +189,103 @@ func TestResponseRecorderHijackUnsupported(t *testing.T) {
 	_, _, err := rec.Hijack()
 	assert.Error(t, err)
 	assert.True(t, rec.Hijacked())
+}
+
+// hijackableWriter is an http.ResponseWriter that also supports Hijack.
+type hijackableWriter struct {
+	http.ResponseWriter
+
+	server    net.Conn
+	client    net.Conn
+	readWrite *bufio.ReadWriter
+}
+
+func (w *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.server, w.client = net.Pipe()
+	w.readWrite = bufio.NewReadWriter(bufio.NewReader(w.client), bufio.NewWriter(w.client))
+	return w.server, w.readWrite, nil
+}
+
+// pushWriter is an http.ResponseWriter that also supports HTTP/2 push.
+type pushWriter struct {
+	http.ResponseWriter
+	targets []string
+}
+
+func (w *pushWriter) Push(target string, _ *http.PushOptions) error {
+	w.targets = append(w.targets, target)
+	return nil
+}
+
+func TestResponseRecorderBodyReturnsCopy(t *testing.T) {
+	rec := NewResponseRecorder(httptest.NewRecorder(), 16)
+
+	_, err := rec.Write([]byte("abc"))
+	require.NoError(t, err)
+
+	body := rec.Body()
+	require.Equal(t, "abc", string(body))
+
+	body[0] = 'X'
+	assert.Equal(t, "abc", string(rec.Body()), "Body must not expose the internal buffer")
+}
+
+func TestResponseRecorderPush(t *testing.T) {
+	pw := &pushWriter{ResponseWriter: httptest.NewRecorder()}
+	rec := NewResponseRecorder(pw, 16)
+
+	require.NoError(t, rec.Push("/style.css", nil))
+	require.NoError(t, rec.Push("/app.js", nil))
+	assert.Equal(t, []string{"/style.css", "/app.js"}, pw.targets)
+
+	plain := NewResponseRecorder(httptest.NewRecorder(), 16)
+	assert.ErrorIs(t, plain.Push("/style.css", nil), http.ErrNotSupported)
+}
+
+func TestResponseRecorderResponseControllerFlush(t *testing.T) {
+	rr := httptest.NewRecorder()
+	rec := NewResponseRecorder(rr, 1024)
+
+	_, err := rec.Write([]byte("chunk"))
+	require.NoError(t, err)
+
+	require.NoError(t, http.NewResponseController(rec).Flush())
+	assert.True(t, rr.Flushed)
+	assert.Equal(t, "chunk", rr.Body.String())
+	assert.True(t, rec.Passthrough())
+}
+
+func TestResponseRecorderResponseControllerHijack(t *testing.T) {
+	hw := &hijackableWriter{ResponseWriter: httptest.NewRecorder()}
+	rec := NewResponseRecorder(hw, 1024)
+
+	_, err := rec.Write([]byte("buffered"))
+	require.NoError(t, err)
+
+	conn, readWrite, err := http.NewResponseController(rec).Hijack()
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.NotNil(t, readWrite)
+	assert.True(t, rec.Hijacked())
+	assert.False(t, rec.Buffered())
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = hw.client.Close()
+	})
+
+	// A hijacked response must not be written or committed afterwards.
+	rec.WriteHeader(http.StatusTeapot)
+	_, err = rec.Write([]byte("ignored"))
+	assert.ErrorIs(t, err, errHijacked)
+	require.NoError(t, rec.Commit())
+}
+
+func TestResponseRecorderFlushErrorAfterDiscard(t *testing.T) {
+	rr := httptest.NewRecorder()
+	rec := NewResponseRecorder(rr, 16)
+
+	rec.Discard()
+	require.NoError(t, rec.FlushError())
+	assert.False(t, rr.Flushed)
+	assert.Empty(t, rr.Body.String())
 }

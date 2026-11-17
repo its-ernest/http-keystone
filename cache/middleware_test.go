@@ -214,3 +214,35 @@ func TestCacheSkipper(t *testing.T) {
 	}
 	assert.Equal(t, 2, calls)
 }
+
+func TestCacheRestoresOriginalWriterOnError(t *testing.T) {
+	e := echo.New()
+	st := store.NewMemoryStore()
+
+	handler := New(Config{Store: st})(func(c *echo.Context) error {
+		_ = c.String(http.StatusOK, "partial")
+		return echo.NewHTTPError(http.StatusInternalServerError, "boom")
+	})
+
+	c, _ := newCacheContext(t, e, http.MethodGet, "/error-restore")
+	original := c.Response()
+
+	err := handler(c)
+	require.Error(t, err)
+	assert.Same(t, original, c.Response(), "the recorder must not leak into Echo's error handling")
+}
+
+func TestCacheRestoresOriginalWriterOnPanic(t *testing.T) {
+	e := echo.New()
+	st := store.NewMemoryStore()
+
+	handler := New(Config{Store: st})(func(*echo.Context) error {
+		panic("handler boom")
+	})
+
+	c, _ := newCacheContext(t, e, http.MethodGet, "/panic-restore")
+	original := c.Response()
+
+	assert.Panics(t, func() { _ = handler(c) })
+	assert.Same(t, original, c.Response())
+}
