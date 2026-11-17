@@ -3,6 +3,8 @@
 package abuse
 
 import (
+	"context"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -40,7 +42,19 @@ type (
 		// DefaultConfig.Cooldown (30 minutes).
 		Cooldown time.Duration
 		// EnableDelay adds latency to suspicious requests instead of a hard block.
-		EnableDelay  bool
+		EnableDelay bool
+		// MaxDelay caps the tarpit delay applied when EnableDelay is set.
+		// Values <= 0 fall back to DefaultConfig.MaxDelay (2s).
+		MaxDelay time.Duration
+		// DelayFunc computes the tarpit delay for a heat score. The result is
+		// clamped to MaxDelay and never exceeds it.
+		// Values <= 0 mean no delay.
+		// Default is a linear curve of score*10ms (e.g. 75 heat -> 750ms).
+		DelayFunc func(score int) time.Duration
+		// Jitter adds +/-20% randomness to the computed delay so delayed
+		// clients do not retry in lockstep. The clamped MaxDelay is still
+		// honoured.
+		Jitter       bool
 		ErrorHandler func(c *echo.Context, score int) error
 	}
 )
@@ -49,6 +63,10 @@ type (
 var DefaultConfig = Config{
 	Threshold: 100,
 	Cooldown:  30 * time.Minute,
+	MaxDelay:  2 * time.Second,
+	DelayFunc: func(score int) time.Duration {
+		return time.Duration(score) * 10 * time.Millisecond
+	},
 	ErrorHandler: func(c *echo.Context, score int) error {
 		return echo.NewHTTPError(http.StatusForbidden, "Access denied due to suspicious activity")
 	},
@@ -71,6 +89,12 @@ func New(config Config) echo.MiddlewareFunc {
 	if config.Cooldown <= 0 {
 		config.Cooldown = DefaultConfig.Cooldown
 	}
+	if config.MaxDelay <= 0 {
+		config.MaxDelay = DefaultConfig.MaxDelay
+	}
+	if config.DelayFunc == nil {
+		config.DelayFunc = DefaultConfig.DelayFunc
+	}
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = DefaultConfig.ErrorHandler
 	}
@@ -87,17 +111,18 @@ func New(config Config) echo.MiddlewareFunc {
 			// 1. Fetch current heat
 			currentScore, _ := config.Store.Get(ctx, key)
 
-			// 2. Tarpit Logic: Slow client down if getting "warm"
-			if config.EnableDelay && currentScore > (config.Threshold/2) {
-				// Linear delay: more heat = more wait
-				// e.g., if threshold is 100 and score is 75, wait 750ms
-				delay := time.Duration(currentScore) * 10 * time.Millisecond
-				time.Sleep(delay)
-			}
-
-			// 3. Immediate Block: If toasted, don't even look at rules
+			// 2. Immediate Block first: blocked clients are rejected without
+			// being parked in a tarpit sleep.
 			if currentScore >= config.Threshold {
 				return config.ErrorHandler(c, currentScore)
+			}
+
+			// 3. Tarpit Logic: slow "warm" clients down, cancellably and with
+			// a hard upper bound.
+			if config.EnableDelay && currentScore > (config.Threshold/2) {
+				if err := sleepWithContext(ctx, config.delayFor(currentScore)); err != nil {
+					return err
+				}
 			}
 
 			// 4. Pre-Handler Path Analysis
@@ -125,5 +150,42 @@ func New(config Config) echo.MiddlewareFunc {
 
 			return next(c)
 		}
+	}
+}
+
+// delayFor returns the clamped tarpit delay for a heat score.
+func (config Config) delayFor(score int) time.Duration {
+	delay := config.DelayFunc(score)
+	if delay <= 0 {
+		return 0
+	}
+
+	if config.Jitter {
+		delta := float64(delay) * 0.2
+		delay += time.Duration((rand.Float64()*2 - 1) * delta)
+	}
+
+	if delay > config.MaxDelay {
+		delay = config.MaxDelay
+	}
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+// sleepWithContext waits for d or until ctx is done, whichever comes first.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
