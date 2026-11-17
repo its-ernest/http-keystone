@@ -9,7 +9,7 @@ First off, thank you for considering contributing to `http-keystone`! It is thro
 - **Breaking Upstream Changes:** If a new version of Echo v5 breaks the current middleware, we create a legacy branch (e.g., `v5.0-legacy`) and update `main` to support the new API.
 - **Bug Fixes:** Should be submitted against the `main` branch.
 
-## <i class="fas fa-tasks"></i> Development Workflow
+## Development Workflow
 
 1. **Fork the Repository:** Create your own fork and clone it locally.
 2. **Environment:** Ensure you are using **Go 1.25+**.
