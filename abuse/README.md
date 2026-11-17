@@ -125,7 +125,10 @@ compatible rules and thresholds.
 | `Threshold` | `int` | `100` | The score at which a client is fully blocked. `<= 0` uses the default. |
 | `Rules` | `[]Rule` | `nil` | List of paths and their associated penalty scores. Copied by `New`. |
 | `Cooldown` | `time.Duration` | `30m` | Time before a client's heat starts to reset. `<= 0` uses the default. |
-| `EnableDelay` | `bool` | `false` | If true, applies a linear delay as heat rises. |
+| `EnableDelay` | `bool` | `false` | If true, delays warm clients instead of only blocking them. |
+| `MaxDelay` | `time.Duration` | `2s` | Hard upper bound on the tarpit delay. `<= 0` uses the default. |
+| `DelayFunc` | `func(int) time.Duration` | `score * 10ms` | Custom delay curve; the result is clamped to `MaxDelay`. `<= 0` means no delay. |
+| `Jitter` | `bool` | `false` | Adds ±20% randomness so delayed clients do not retry in lockstep. |
 | `ErrorHandler`| `func(*echo.Context, int)` | `Default` | Custom logic for when a user is blocked. |
 
 > **Zero config is safe.** `abuse.New(Config{Store: counter})` uses
@@ -141,6 +144,39 @@ When `EnableDelay` is active, the middleware calculates a sleep duration based o
 $$Delay = CurrentScore \times 10ms$$
 
 If a user has **80 points** of heat, every request they make will be artificially slowed down by **800ms**. This makes your API an expensive and frustrating target for automated crawlers without affecting legitimate users.
+
+The delay is:
+
+- **Clamped** to `MaxDelay` (default `2s`), so a score of 10,000 costs at most
+  2 seconds, not 100.
+- **Cancellable**: the wait is a timer on the request context, so a client that
+  disconnects (or a server shutting down) releases the goroutine immediately and
+  the middleware returns `context.Canceled`.
+- **Skipped for cold clients**: scores at or below half the threshold are not
+  delayed.
+- **Applied after the block check**: a request that is already over the
+  threshold is rejected with `ErrorHandler` and never parked in the tarpit.
+
+```go
+abuse.New(abuse.Config{
+	Store:       counter,
+	Threshold:   100,
+	EnableDelay: true,
+	MaxDelay:    2 * time.Second, // hard cap
+	Jitter:      true,            // ±20%
+})
+```
+
+Replace the curve with `DelayFunc`, for example exponential:
+
+```go
+DelayFunc: func(score int) time.Duration {
+	return time.Duration(score*score) * time.Millisecond // still clamped by MaxDelay
+},
+```
+
+> A tarpit deliberately holds the connection and its goroutine for the delay
+> duration. Size `MaxDelay` with that in mind.
 
 ---
 

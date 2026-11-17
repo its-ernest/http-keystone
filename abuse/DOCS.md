@@ -24,6 +24,10 @@ Package abuse provides behavioral analysis middleware for Echo v5. It tracks cli
 var DefaultConfig = Config{
     Threshold: 100,
     Cooldown:  30 * time.Minute,
+    MaxDelay:  2 * time.Second,
+    DelayFunc: func(score int) time.Duration {
+        return time.Duration(score) * 10 * time.Millisecond
+    },
     ErrorHandler: func(c *echo.Context, score int) error {
         return echo.NewHTTPError(http.StatusForbidden, "Access denied due to suspicious activity")
     },
@@ -31,7 +35,7 @@ var DefaultConfig = Config{
 ```
 
 <a name="New"></a>
-## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L59>)
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L77>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -76,7 +80,7 @@ func main() {
 </details>
 
 <a name="Config"></a>
-## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L32-L45>)
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L34-L59>)
 
 Config defines the settings for the abuse detection middleware.
 
@@ -92,13 +96,25 @@ type Config struct {
     // DefaultConfig.Cooldown (30 minutes).
     Cooldown time.Duration
     // EnableDelay adds latency to suspicious requests instead of a hard block.
-    EnableDelay  bool
+    EnableDelay bool
+    // MaxDelay caps the tarpit delay applied when EnableDelay is set.
+    // Values <= 0 fall back to DefaultConfig.MaxDelay (2s).
+    MaxDelay time.Duration
+    // DelayFunc computes the tarpit delay for a heat score. The result is
+    // clamped to MaxDelay and never exceeds it.
+    // Values <= 0 mean no delay.
+    // Default is a linear curve of score*10ms (e.g. 75 heat -> 750ms).
+    DelayFunc func(score int) time.Duration
+    // Jitter adds +/-20% randomness to the computed delay so delayed
+    // clients do not retry in lockstep. The clamped MaxDelay is still
+    // honoured.
+    Jitter       bool
     ErrorHandler func(c *echo.Context, score int) error
 }
 ```
 
 <a name="Rule"></a>
-## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L18-L29>)
+## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L20-L31>)
 
 Rule defines the "heat" points added for specific path patterns. Path supports exact matches \(e.g., "/.env"\) and a trailing "\*" wildcard on a path\-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
 
