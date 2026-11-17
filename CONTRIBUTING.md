@@ -49,4 +49,4 @@ Please use the GitHub Issue Tracker. When reporting a bug, include:
 
 ---
 
-**Built with  for the Go community.**
+**Built with ❤️ for the Go community.**

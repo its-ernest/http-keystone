@@ -9,60 +9,189 @@ import "github.com/its-ernest/http-keystone/internal"
 ## Index
 
 - [type ResponseRecorder](<#ResponseRecorder>)
-  - [func NewResponseRecorder\(w http.ResponseWriter\) \*ResponseRecorder](<#NewResponseRecorder>)
+  - [func NewResponseRecorder\(w http.ResponseWriter, limit int\) \*ResponseRecorder](<#NewResponseRecorder>)
+  - [func \(r \*ResponseRecorder\) Body\(\) \[\]byte](<#ResponseRecorder.Body>)
+  - [func \(r \*ResponseRecorder\) Buffered\(\) bool](<#ResponseRecorder.Buffered>)
+  - [func \(r \*ResponseRecorder\) Commit\(\) error](<#ResponseRecorder.Commit>)
+  - [func \(r \*ResponseRecorder\) Discard\(\)](<#ResponseRecorder.Discard>)
   - [func \(r \*ResponseRecorder\) Flush\(\)](<#ResponseRecorder.Flush>)
-  - [func \(r \*ResponseRecorder\) Write\(b \[\]byte\) \(int, error\)](<#ResponseRecorder.Write>)
+  - [func \(r \*ResponseRecorder\) FlushError\(\) error](<#ResponseRecorder.FlushError>)
+  - [func \(r \*ResponseRecorder\) Hijack\(\) \(net.Conn, \*bufio.ReadWriter, error\)](<#ResponseRecorder.Hijack>)
+  - [func \(r \*ResponseRecorder\) Hijacked\(\) bool](<#ResponseRecorder.Hijacked>)
+  - [func \(r \*ResponseRecorder\) Overflowed\(\) bool](<#ResponseRecorder.Overflowed>)
+  - [func \(r \*ResponseRecorder\) Passthrough\(\) bool](<#ResponseRecorder.Passthrough>)
+  - [func \(r \*ResponseRecorder\) Push\(target string, opts \*http.PushOptions\) error](<#ResponseRecorder.Push>)
+  - [func \(r \*ResponseRecorder\) Status\(\) int](<#ResponseRecorder.Status>)
+  - [func \(r \*ResponseRecorder\) Unwrap\(\) http.ResponseWriter](<#ResponseRecorder.Unwrap>)
+  - [func \(r \*ResponseRecorder\) Write\(p \[\]byte\) \(int, error\)](<#ResponseRecorder.Write>)
   - [func \(r \*ResponseRecorder\) WriteHeader\(code int\)](<#ResponseRecorder.WriteHeader>)
 
 
 <a name="ResponseRecorder"></a>
-## type ResponseRecorder
+## type [ResponseRecorder](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L30-L47>)
 
-ResponseRecorder captures response data for caching or idempotency storage.
+ResponseRecorder buffers a response so a middleware can inspect and modify it before anything is sent to the client.
+
+The recorder holds at most Limit bytes. If the handler writes more than that, the recorder flushes what it has and switches to pass\-through mode; the response is streamed normally and Buffered reports false. Calling Flush or Hijack also disables buffering, which keeps SSE, websockets, and other streaming handlers working.
+
+A middleware must call Commit to send a fully buffered response, or Discard to throw it away \(for example when the handler returns an error and Echo should render its own error response\).
+
+ResponseRecorder implements Unwrap so it plays well with http.ResponseController and Echo's response\-writer contract.
 
 ```go
 type ResponseRecorder struct {
     http.ResponseWriter
-    Status    int
-    Body      *bytes.Buffer
-    Committed bool
+
+    // BeforeWriteHeader, when set, is called once just before the status line
+    // and headers are written to the real writer. It is the last chance to add
+    // headers such as ETag or X-Cache.
+    BeforeWriteHeader func(http.Header)
+    // contains filtered or unexported fields
 }
 ```
 
 <a name="NewResponseRecorder"></a>
-### func NewResponseRecorder
+### func [NewResponseRecorder](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L51>)
 
 ```go
-func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder
+func NewResponseRecorder(w http.ResponseWriter, limit int) *ResponseRecorder
 ```
 
+NewResponseRecorder wraps w and buffers up to limit bytes. A limit \<= 0 disables buffering entirely: the first write goes straight to w.
 
+<a name="ResponseRecorder.Body"></a>
+### func \(\*ResponseRecorder\) [Body](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L170>)
+
+```go
+func (r *ResponseRecorder) Body() []byte
+```
+
+Body returns a copy of the buffered body.
+
+<a name="ResponseRecorder.Buffered"></a>
+### func \(\*ResponseRecorder\) [Buffered](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L177>)
+
+```go
+func (r *ResponseRecorder) Buffered() bool
+```
+
+Buffered reports whether the response is still being buffered.
+
+<a name="ResponseRecorder.Commit"></a>
+### func \(\*ResponseRecorder\) [Commit](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L102>)
+
+```go
+func (r *ResponseRecorder) Commit() error
+```
+
+Commit flushes a buffered response to the client. It is a no\-op when the response was streamed, hijacked, or discarded.
+
+<a name="ResponseRecorder.Discard"></a>
+### func \(\*ResponseRecorder\) [Discard](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L114>)
+
+```go
+func (r *ResponseRecorder) Discard()
+```
+
+Discard drops the buffered response and prevents it from being committed. Headers already set on the underlying writer are left alone.
 
 <a name="ResponseRecorder.Flush"></a>
-### func \(\*ResponseRecorder\) Flush
+### func \(\*ResponseRecorder\) [Flush](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L121>)
 
 ```go
 func (r *ResponseRecorder) Flush()
 ```
 
-Flush implementation for buffered underlying writers \(important for HTTP/2\)
+Flush sends the status, headers, and buffered body, then flushes the underlying writer. It permanently disables buffering for this response.
 
-<a name="ResponseRecorder.Write"></a>
-### func \(\*ResponseRecorder\) Write
+<a name="ResponseRecorder.FlushError"></a>
+### func \(\*ResponseRecorder\) [FlushError](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L126>)
 
 ```go
-func (r *ResponseRecorder) Write(b []byte) (int, error)
+func (r *ResponseRecorder) FlushError() error
 ```
 
+FlushError is the http.ResponseController\-compatible variant of Flush.
 
+<a name="ResponseRecorder.Hijack"></a>
+### func \(\*ResponseRecorder\) [Hijack](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L140>)
+
+```go
+func (r *ResponseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error)
+```
+
+Hijack lets the handler take over the connection \(websockets\). Buffered data is discarded and no HTTP response is written.
+
+<a name="ResponseRecorder.Hijacked"></a>
+### func \(\*ResponseRecorder\) [Hijacked](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L193>)
+
+```go
+func (r *ResponseRecorder) Hijacked() bool
+```
+
+Hijacked reports whether the handler took over the connection.
+
+<a name="ResponseRecorder.Overflowed"></a>
+### func \(\*ResponseRecorder\) [Overflowed](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L188>)
+
+```go
+func (r *ResponseRecorder) Overflowed() bool
+```
+
+Overflowed reports whether the buffer limit was exceeded.
+
+<a name="ResponseRecorder.Passthrough"></a>
+### func \(\*ResponseRecorder\) [Passthrough](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L183>)
+
+```go
+func (r *ResponseRecorder) Passthrough() bool
+```
+
+Passthrough reports whether the response was streamed because it exceeded the buffer limit or the handler flushed it.
+
+<a name="ResponseRecorder.Push"></a>
+### func \(\*ResponseRecorder\) [Push](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L151>)
+
+```go
+func (r *ResponseRecorder) Push(target string, opts *http.PushOptions) error
+```
+
+Push implements http.Pusher when the underlying writer supports HTTP/2 server push.
+
+<a name="ResponseRecorder.Status"></a>
+### func \(\*ResponseRecorder\) [Status](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L165>)
+
+```go
+func (r *ResponseRecorder) Status() int
+```
+
+Status returns the recorded status code.
+
+<a name="ResponseRecorder.Unwrap"></a>
+### func \(\*ResponseRecorder\) [Unwrap](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L160>)
+
+```go
+func (r *ResponseRecorder) Unwrap() http.ResponseWriter
+```
+
+Unwrap returns the wrapped writer. Echo v5 uses this to reach the original \*echo.Response and http.ResponseController uses it for optional interfaces.
+
+<a name="ResponseRecorder.Write"></a>
+### func \(\*ResponseRecorder\) [Write](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L74>)
+
+```go
+func (r *ResponseRecorder) Write(p []byte) (int, error)
+```
+
+Write stores the body in the buffer, or streams it once the limit is exceeded.
 
 <a name="ResponseRecorder.WriteHeader"></a>
-### func \(\*ResponseRecorder\) WriteHeader
+### func \(\*ResponseRecorder\) [WriteHeader](<https://github.com/its-ernest/http-keystone/blob/main/internal/recorder.go#L61>)
 
 ```go
 func (r *ResponseRecorder) WriteHeader(code int)
 ```
 
-
+WriteHeader records the status code. It is not sent to the client until Commit, a buffer overflow, or Flush.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

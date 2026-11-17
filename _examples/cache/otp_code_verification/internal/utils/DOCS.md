@@ -13,7 +13,7 @@ import "otp-backend/internal/utils"
 
 
 <a name="FormatPhone"></a>
-## func FormatPhone
+## func [FormatPhone](<https://github.com/its-ernest/http-keystone/blob/main/_examples/cache/otp_code_verification/internal/utils/generator.go#L15>)
 
 ```go
 func FormatPhone(phone string) string
@@ -22,7 +22,7 @@ func FormatPhone(phone string) string
 
 
 <a name="GenerateOTP"></a>
-## func GenerateOTP
+## func [GenerateOTP](<https://github.com/its-ernest/http-keystone/blob/main/_examples/cache/otp_code_verification/internal/utils/generator.go#L10>)
 
 ```go
 func GenerateOTP() string

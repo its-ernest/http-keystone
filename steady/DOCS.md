@@ -26,7 +26,7 @@ var DefaultConfig = Config{
 ```
 
 <a name="New"></a>
-## func New
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/steady/middleware.go#L12>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -40,30 +40,42 @@ New returns a steady middleware that limits concurrent requests.
 
 
 ```go
-e := echo.New()
+package main
 
-// Configure the steady middleware with a maximum of 10 concurrent requests
-// and a 5-second wait timeout for a slot.
-config := steady.Config{
-	MaxConcurrent: 10,
-	WaitTimeout:   5 * time.Second,
+import (
+	"net/http"
+	"time"
+
+	"github.com/its-ernest/http-keystone/steady"
+	"github.com/labstack/echo/v5"
+)
+
+func main() {
+	e := echo.New()
+
+	// Configure the steady middleware with a maximum of 10 concurrent requests
+	// and a 5-second wait timeout for a slot.
+	config := steady.Config{
+		MaxConcurrent: 10,
+		WaitTimeout:   5 * time.Second,
+	}
+
+	// Add the middleware to the Echo instance
+	e.Use(steady.New(config))
+
+	e.GET("/", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "Hello, World!")
+	})
+
+	e.Start(":8080")
 }
-
-// Add the middleware to the Echo instance
-e.Use(steady.New(config))
-
-e.GET("/", func(c *echo.Context) error {
-	return c.String(http.StatusOK, "Hello, World!")
-})
-
-e.Start(":8080")
 ```
 
 </p>
 </details>
 
 <a name="Config"></a>
-## type Config
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/steady/config.go#L11-L26>)
 
 Config defines the configuration for the steady middleware.
 

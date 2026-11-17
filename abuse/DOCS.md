@@ -31,7 +31,7 @@ var DefaultConfig = Config{
 ```
 
 <a name="New"></a>
-## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L55>)
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L59>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -76,7 +76,7 @@ func main() {
 </details>
 
 <a name="Config"></a>
-## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L28-L41>)
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L32-L45>)
 
 Config defines the settings for the abuse detection middleware.
 
@@ -98,9 +98,9 @@ type Config struct {
 ```
 
 <a name="Rule"></a>
-## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L16-L25>)
+## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L18-L29>)
 
-Rule defines the "heat" points added for specific path patterns. Path supports exact matches (e.g., "/.env") and a trailing "\*" wildcard on a path-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
+Rule defines the "heat" points added for specific path patterns. Path supports exact matches \(e.g., "/.env"\) and a trailing "\*" wildcard on a path\-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
 
 ```go
 type Rule struct {

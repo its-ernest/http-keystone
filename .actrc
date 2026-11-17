@@ -1,0 +1,5 @@
+# nektos/act defaults used by `just ci`.
+#
+# The workflow files target GitHub's ubuntu-latest runner. Map that label to the
+# closest community image so act does not prompt for an image on every run.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
