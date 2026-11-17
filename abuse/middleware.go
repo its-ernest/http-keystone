@@ -26,10 +26,15 @@ type (
 
 	// Config defines the settings for the abuse detection middleware.
 	Config struct {
-		Store     store.Counter
+		Store store.Counter
+		// Threshold is the heat score at which requests are rejected.
+		// Values <= 0 fall back to DefaultConfig.Threshold (100) so a zero
+		// Config can never block every request.
 		Threshold int
 		Rules     []Rule
-		Cooldown  time.Duration
+		// Cooldown is how long heat is remembered. Values <= 0 fall back to
+		// DefaultConfig.Cooldown (30 minutes).
+		Cooldown time.Duration
 		// EnableDelay adds latency to suspicious requests instead of a hard block.
 		EnableDelay  bool
 		ErrorHandler func(c *echo.Context, score int) error
@@ -53,13 +58,21 @@ func New(config Config) echo.MiddlewareFunc {
 		panic("http-keystone/abuse: Store is required")
 	}
 
-	// 2. Apply defaults
-	if config.Cooldown == 0 {
+	// 2. Apply defaults. A zero Threshold would otherwise make
+	// `currentScore >= config.Threshold` true for every request and reject all
+	// traffic, so non-positive values fall back to DefaultConfig.
+	if config.Threshold <= 0 {
+		config.Threshold = DefaultConfig.Threshold
+	}
+	if config.Cooldown <= 0 {
 		config.Cooldown = DefaultConfig.Cooldown
 	}
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = DefaultConfig.ErrorHandler
 	}
+
+	// Copy Rules so mutating the caller's slice after New has no effect.
+	config.Rules = append([]Rule(nil), config.Rules...)
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {

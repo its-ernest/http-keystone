@@ -106,11 +106,16 @@ compatible rules and thresholds.
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `Store` | `store.Counter` | **Required** | Atomic counter backend (Memory or Redis). |
-| `Threshold` | `int` | `100` | The score at which a client is fully blocked. |
-| `Rules` | `[]Rule` | `nil` | List of paths and their associated penalty scores. |
-| `Cooldown` | `time.Duration` | `30m` | Time before a client's heat starts to reset. |
+| `Threshold` | `int` | `100` | The score at which a client is fully blocked. `<= 0` uses the default. |
+| `Rules` | `[]Rule` | `nil` | List of paths and their associated penalty scores. Copied by `New`. |
+| `Cooldown` | `time.Duration` | `30m` | Time before a client's heat starts to reset. `<= 0` uses the default. |
 | `EnableDelay` | `bool` | `false` | If true, applies a linear delay as heat rises. |
 | `ErrorHandler`| `func(*echo.Context, int)` | `Default` | Custom logic for when a user is blocked. |
+
+> **Zero config is safe.** `abuse.New(Config{Store: counter})` uses
+> `Threshold: 100`, `Cooldown: 30m`, and the default error handler, so it will
+> not reject every request. Rules are copied, so mutating your slice after
+> `New` has no effect.
 
 ---
 
