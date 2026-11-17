@@ -20,9 +20,14 @@ First off, thank you for considering contributing to `http-keystone`! It is thro
    # run the test suite and checks locally (same as CI)
    make ci
 
+   # report coverage for cache and internal
+   make coverage
+
    # regenerate the package documentation
    make docs
    ```
+
+   CI enforces at least **80% statement coverage** for `cache` and `internal`.
 
    To run the exact GitHub Actions workflows locally, install
    [nektos/act](https://github.com/nektos/act) and use:
