@@ -12,6 +12,8 @@ Package abuse provides behavioral analysis middleware for Echo v5. It tracks cli
 
 - [Variables](<#variables>)
 - [func New\(config Config\) echo.MiddlewareFunc](<#New>)
+- [func NewForwardedIPKeyFunc\(options ...echo.TrustOption\) func\(c \*echo.Context\) string](<#NewForwardedIPKeyFunc>)
+- [func NewIPKeyFunc\(extractor echo.IPExtractor\) func\(c \*echo.Context\) string](<#NewIPKeyFunc>)
 - [type Config](<#Config>)
 - [type Rule](<#Rule>)
 
@@ -22,6 +24,8 @@ Package abuse provides behavioral analysis middleware for Echo v5. It tracks cli
 
 ```go
 var DefaultConfig = Config{
+    Skipper:   middleware.DefaultSkipper,
+    KeyFunc:   func(c *echo.Context) string { return c.RealIP() },
     Threshold: 100,
     Cooldown:  30 * time.Minute,
     MaxDelay:  2 * time.Second,
@@ -35,7 +39,7 @@ var DefaultConfig = Config{
 ```
 
 <a name="New"></a>
-## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L77>)
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L95>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -79,13 +83,57 @@ func main() {
 </p>
 </details>
 
+<a name="NewForwardedIPKeyFunc"></a>
+## func [NewForwardedIPKeyFunc](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L243>)
+
+```go
+func NewForwardedIPKeyFunc(options ...echo.TrustOption) func(c *echo.Context) string
+```
+
+NewForwardedIPKeyFunc returns a KeyFunc that resolves the client IP from X\-Forwarded\-For, trusting only the direct peer when that peer is a trusted proxy. Pass echo.TrustIPRange \(and the other echo.Trust\* options\) to describe your proxies; by default loopback, link\-local and private ranges are trusted.
+
+Use it when the middleware runs behind a reverse proxy and you do not want to set echo.Echo.IPExtractor globally:
+
+```
+e.Use(abuse.New(abuse.Config{
+	Store:   counter,
+	KeyFunc: abuse.NewForwardedIPKeyFunc(echo.TrustIPRange(proxyCIDR)),
+}))
+```
+
+Without trusted proxies \(for example when the app faces the internet directly\), use echo.ExtractIPDirect with NewIPKeyFunc so headers are ignored completely.
+
+<a name="NewIPKeyFunc"></a>
+## func [NewIPKeyFunc](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L252>)
+
+```go
+func NewIPKeyFunc(extractor echo.IPExtractor) func(c *echo.Context) string
+```
+
+NewIPKeyFunc adapts an echo.IPExtractor into a KeyFunc. A nil extractor falls back to c.RealIP\(\).
+
 <a name="Config"></a>
-## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L34-L59>)
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L35-L75>)
 
 Config defines the settings for the abuse detection middleware.
 
 ```go
 type Config struct {
+    // Skipper defines a function to skip middleware. Defaults to
+    // middleware.DefaultSkipper.
+    Skipper middleware.Skipper
+
+    // KeyFunc derives the identity used to track heat. The returned string
+    // is appended to "abuse:heat:" as the store key.
+    //
+    // The default is c.RealIP(). Note that c.RealIP() trusts
+    // X-Forwarded-For / X-Real-IP when Echo has an IPExtractor configured,
+    // and Echo's default extracts the header values without verification.
+    // Behind a proxy, configure e.IPExtractor (see
+    // echo.ExtractIPFromXFFHeader) or set KeyFunc to something the client
+    // cannot choose. See NewForwardedIPKeyFunc for a ready-made helper.
+    KeyFunc func(c *echo.Context) string
+
     Store store.Counter
     // Threshold is the heat score at which requests are rejected.
     // Values <= 0 fall back to DefaultConfig.Threshold (100) so a zero
@@ -114,7 +162,7 @@ type Config struct {
 ```
 
 <a name="Rule"></a>
-## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L20-L31>)
+## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L21-L32>)
 
 Rule defines the "heat" points added for specific path patterns. Path supports exact matches \(e.g., "/.env"\) and a trailing "\*" wildcard on a path\-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
 
