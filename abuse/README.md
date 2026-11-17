@@ -69,6 +69,22 @@ func main() {
 
 ---
 
+## Memory lifecycle
+
+`store.NewMemoryCounter()` keeps one entry per client key until it expires.
+Expired keys are removed lazily on access. For long-running processes, start
+the background evictor and bound the number of tracked clients:
+
+```go
+abuseStore := store.NewMemoryCounterWithLimit(100_000) // bound memory
+abuseStore.StartEvictor(ctx, time.Minute)             // drop expired keys
+defer abuseStore.Close()                              // stop the evictor
+```
+
+When the limit is reached, the key that expires first is evicted, so active
+offenders keep their score while stale clients are dropped. `Close` only stops
+the evictor; the counter stays usable.
+
 ## Distributed tracking with Redis
 
 `store.RedisCounter` implements `store.Counter` and stores scores in Redis, so
