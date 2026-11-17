@@ -1,8 +1,6 @@
 package cache
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -34,7 +32,10 @@ func New(config Config) echo.MiddlewareFunc {
 		config.RetryDelay = 20 * time.Millisecond
 	}
 	if config.MaxRetries == 0 {
-		config.MaxRetries = 5
+		config.MaxRetries = 10
+	}
+	if config.LockTTL == 0 {
+		config.LockTTL = 10 * time.Second
 	}
 	if config.CacheableStatusCodes == nil {
 		config.CacheableStatusCodes = []int{http.StatusOK}
@@ -64,12 +65,30 @@ func New(config Config) echo.MiddlewareFunc {
 				return replay(c, entry, config)
 			}
 
-			locked, unlockFn := acquireLockWithTTL(ctx, config.Store, lockKey, 10*time.Second)
+			locked, unlockFn := acquireLockWithTTL(ctx, config.Store, lockKey, config.LockTTL)
 			if !locked {
-				// Stampede handling is tracked separately; fall through for now.
+				// Another request is populating this key. Wait for its result
+				// instead of running the handler and creating a stampede.
+				entry, ok, err := waitForEntry(ctx, config, key)
+				if err != nil {
+					return err
+				}
+				if ok {
+					return replay(c, entry, config)
+				}
+				// The retry budget was exhausted without an entry (the other
+				// request failed, streamed, or was not cacheable). Fail open:
+				// serve the request from the origin and let a later request
+				// populate the cache.
 				return next(c)
 			}
 			defer unlockFn()
+
+			// Double-check: another request may have populated the entry
+			// between our miss and the lock acquisition.
+			if entry, err := config.Store.Get(ctx, key); err == nil && entry != nil {
+				return replay(c, entry, config)
+			}
 
 			originalWriter := c.Response()
 			recorder := internal.NewResponseRecorder(originalWriter, config.MaxBodySize)
@@ -110,9 +129,7 @@ func New(config Config) echo.MiddlewareFunc {
 			if responseCacheable(c, candidate, config) {
 				stored := sanitizeHeader(candidate.Header)
 				ensureVary(stored, config.VaryHeaders)
-
-				hash := sha256.Sum256(candidate.Body)
-				stored.Set("ETag", hex.EncodeToString(hash[:]))
+				stored.Set("ETag", etagFor(candidate.Body, config.WeakETag))
 
 				candidate.Header = stored
 				if err := config.Store.Save(ctx, key, candidate, config.TTL); err == nil {

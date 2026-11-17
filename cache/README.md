@@ -7,7 +7,7 @@ A **high-performance, production-ready caching middleware** for [Echo](https://e
 
 * **Concurrent-safe:** Uses `sync.Map` for high-concurrency environments.
 * **Cache stampede prevention:** Only one request computes the cache per key; others wait or retry.
-* **ETag & Not-Modified:** Supports client-side caching validation.
+* **ETag & Not-Modified:** RFC 9110 entity-tags with quoted, list, weak, and `*` `If-None-Match` support.
 * **Privacy-safe defaults:** Authenticated requests, cookies, and non-public responses are never stored unless you opt in.
 * **Vary-aware keys:** Responses that vary on `Accept-Encoding` (or headers you configure) get separate cache entries.
 * **Configurable:** TTL, max body size, retry behavior, skip functions, key generators.
@@ -95,8 +95,10 @@ func main() {
 | `Skipper`              | `func(*echo.Context) bool`    | `nil`                  | Function to skip caching for specific requests.    |
 | `KeyGenerator`         | `func(*echo.Context) string`  | `DefaultKeyGenerator`  | Base cache key. `VaryHeaders` and credentials are appended automatically. |
 | `MaxBodySize`          | `int`                         | 1MB                    | Maximum bytes buffered and cached; larger responses stream through uncached. |
-| `RetryDelay`           | `time.Duration`               | 20ms                   | Delay between retries if cache is being generated. |
-| `MaxRetries`           | `int`                         | 5                      | Max retry attempts for waiting requests.           |
+| `WeakETag`             | `bool`                        | `false`                | Emit `W/"..."` validators instead of strong ETags. |
+| `RetryDelay`           | `time.Duration`               | 20ms                   | Initial delay for a request waiting on another request populating the same key. Grows linearly with up to ±25% jitter. |
+| `MaxRetries`           | `int`                         | 10                     | Maximum number of polls while waiting for a cold key to be populated. |
+| `LockTTL`              | `time.Duration`               | 10s                    | How long the population lock is held before another request may take over. |
 | `CacheAuthenticated`   | `bool`                        | `false`                | Store responses for requests with `Authorization`/`Cookie`, keyed per credential. |
 | `CacheableStatusCodes` | `[]int`                       | `[200]`                | Response statuses that may be stored.              |
 | `VaryHeaders`          | `[]string`                    | `["Accept-Encoding"]`  | Request headers hashed into the key and advertised in `Vary`. |
@@ -146,13 +148,34 @@ instead of by the size of whatever the handler produces.
 
 ---
 
+## Conditional requests (ETag / If-None-Match)
+
+Every stored response gets a quoted entity-tag derived from its body:
+`"<sha256>"` by default, or `W/"<sha256>"` when `WeakETag` is enabled. The same
+ETag is sent on the first `MISS` and on later `HIT`s.
+
+On a hit, `If-None-Match` is parsed per RFC 9110:
+
+- `"etag"` matches
+- `W/"etag"` matches too (If-None-Match uses weak comparison)
+- `"other", "etag"` — any member of the list matches
+- multiple `If-None-Match` header lines are combined
+- `*` matches any stored representation
+
+A match returns `304 Not Modified` with no body but with `ETag`, `Vary`, and any
+stored `Cache-Control`/`Expires`/`Last-Modified`/`Content-Location`, so clients
+and intermediaries can refresh their metadata. The middleware does not invent
+`Cache-Control: max-age`; it preserves whatever the handler set.
+
+---
+
 ## Middleware Behavior
 
 1. **Request policy:** Non-`GET` requests, `Skipper` matches, credential-bearing requests (unless `CacheAuthenticated`), and `no-store`/`no-cache` requests go straight to the handler.
 2. **Cache Check:** The key is the base key plus a digest of the configured `Vary` headers (and credentials, when enabled).
 3. **Cache Hit:** Returns cached response with `X-Cache: HIT`. ETag validated; returns 304 if client has latest version.
-4. **Cache Miss:** Acquires lock for this key (TTL enforced). Only one request builds the cache.
-5. **Other Concurrent Requests:** Retry loop waits for cache to be ready; fallback to origin handler if lock persists.
+4. **Cache Miss:** Acquires lock for this key, re-checks the store, then runs the handler. Only one request populates a cold key.
+5. **Other Concurrent Requests:** Poll the store with `RetryDelay` and linear backoff (up to `MaxRetries`) and replay the populated entry as `X-Cache: HIT`. If the budget expires, they fail open to the origin handler. Cancellation returns promptly.
 6. **Response policy:** Status, `Set-Cookie`, `Cache-Control`, `Vary`, and `ShouldCache` are checked before storing.
 7. **Cache Save:** Stores a sanitized entry with TTL and an ETag, then serves the same headers with `X-Cache: MISS`.
 8. **Eviction:** Expired items removed automatically by the background evictor.
@@ -171,7 +194,7 @@ instead of by the size of whatever the handler produces.
 ## HTTP Headers
 
 * `X-Cache`: `HIT`, `MISS`, or `BYPASS` (not stored)
-* `Etag`: SHA256 hash of response body
+* `Etag`: quoted SHA256 hash of response body (`W/"..."` with `WeakETag`)
 * `Vary`: advertises every configured `VaryHeaders` entry
 * `Content-Type`: Respected from handler or auto-detected
 

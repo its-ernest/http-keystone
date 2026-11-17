@@ -2,10 +2,22 @@ package cache
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/its-ernest/http-keystone/store"
 	"github.com/labstack/echo/v5"
 )
+
+// notModifiedHeaders are the representation metadata a 304 should carry so a
+// client or intermediary can refresh its stored response (RFC 9110 §15.4.5).
+var notModifiedHeaders = []string{
+	"ETag",
+	"Vary",
+	"Cache-Control",
+	"Expires",
+	"Last-Modified",
+	"Content-Location",
+}
 
 // replay writes a cached entry to the response.
 //
@@ -17,10 +29,16 @@ func replay(c *echo.Context, entry *store.Entry, config Config) error {
 	headers := sanitizeHeader(http.Header(entry.Header))
 	ensureVary(headers, config.VaryHeaders)
 
-	clientETag := c.Request().Header.Get("If-None-Match")
 	serverETag := headers.Get("ETag")
+	requestETags := strings.Join(c.Request().Header.Values("If-None-Match"), ",")
 
-	if serverETag != "" && clientETag == serverETag {
+	if etagMatches(requestETags, serverETag) {
+		for _, name := range notModifiedHeaders {
+			for _, value := range headers.Values(name) {
+				c.Response().Header().Add(name, value)
+			}
+		}
+		c.Response().Header().Set("X-Cache", "HIT")
 		return c.NoContent(http.StatusNotModified)
 	}
 
