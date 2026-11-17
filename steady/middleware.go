@@ -14,6 +14,9 @@ func New(config Config) echo.MiddlewareFunc {
 	if config.MaxConcurrent <= 0 {
 		config.MaxConcurrent = DefaultConfig.MaxConcurrent
 	}
+	if config.MaxWaiting == 0 {
+		config.MaxWaiting = DefaultConfig.MaxWaiting
+	}
 	if config.WaitTimeout <= 0 {
 		config.WaitTimeout = DefaultConfig.WaitTimeout
 	}
@@ -26,6 +29,18 @@ func New(config Config) echo.MiddlewareFunc {
 			return echo.NewHTTPError(http.StatusServiceUnavailable, "Server is reaching capacity. Please try again shortly.")
 		}
 	}
+	if config.QueueFullHandler == nil {
+		config.QueueFullHandler = func(c *echo.Context) error {
+			c.Response().Header().Set("Retry-After", strconv.Itoa(int(config.WaitTimeout.Seconds())))
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "Server is at capacity. Please try again shortly.").
+				Wrap(ErrQueueFull)
+		}
+	}
+
+	stats := config.Stats
+	if stats == nil {
+		stats = &Stats{}
+	}
 
 	// The Semaphore
 	sem := make(chan struct{}, config.MaxConcurrent)
@@ -36,6 +51,16 @@ func New(config Config) echo.MiddlewareFunc {
 				return next(c)
 			}
 
+			// Reserve a place in the queue, but never block: a request that
+			// does not fit is rejected immediately instead of parking another
+			// goroutine (and connection, and body) for WaitTimeout.
+			waiting := stats.Waiting.Add(1)
+			if config.MaxWaiting > 0 && waiting > int64(config.MaxWaiting) {
+				stats.Waiting.Add(-1)
+				stats.Rejected.Add(1)
+				return config.QueueFullHandler(c)
+			}
+
 			// Create a timeout context for the wait period
 			ctx, cancel := context.WithTimeout(c.Request().Context(), config.WaitTimeout)
 			defer cancel()
@@ -43,12 +68,19 @@ func New(config Config) echo.MiddlewareFunc {
 			select {
 			case sem <- struct{}{}:
 				// Acquired a slot!
-				defer func() { <-sem }() // Release slot when done
+				stats.Waiting.Add(-1)
+				stats.InFlight.Add(1)
+				defer func() {
+					stats.InFlight.Add(-1)
+					<-sem
+				}() // Release slot when done
 				return next(c)
 
 			case <-ctx.Done():
+				stats.Waiting.Add(-1)
 				// We waited too long or the client disconnected
 				if ctx.Err() == context.DeadlineExceeded {
+					stats.Rejected.Add(1)
 					return config.ErrorHandler(c)
 				}
 				// Client disconnected, just return the context error

@@ -64,9 +64,12 @@ func main() {
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `MaxConcurrent` | `int` | `100` | Maximum number of requests to process at once. |
+| `MaxWaiting` | `int` | `100` | Maximum number of requests that may queue. `0` uses the default; a negative value means unlimited. |
 | `WaitTimeout` | `time.Duration` | `10s` | How long a request will wait in the queue for a slot. |
 | `Skipper` | `middleware.Skipper` | `DefaultSkipper` | Function to skip this middleware for certain routes. |
-| `ErrorHandler` | `func(*echo.Context) error` | *Internal* | Custom logic to run when a request times out in the queue. |
+| `ErrorHandler` | `func(*echo.Context) error` | *Internal* | Called when a request times out in the queue (503 + `Retry-After`). |
+| `QueueFullHandler` | `func(*echo.Context) error` | *Internal* | Called when `MaxWaiting` is already reached. Default is 503 + `Retry-After`, wrapping `ErrQueueFull`. |
+| `Stats` | `*Stats` | `nil` | Optional live counters: `InFlight`, `Waiting`, `Rejected`. |
 
 ---
 
@@ -74,11 +77,46 @@ func main() {
 
 1. **Slot Acquisition:** When a request arrives, the middleware tries to acquire a "slot" from an internal semaphore.
 2. **Immediate Execution:** If a slot is available, the request proceeds immediately.
-3. **Queueing:** If the server is at `MaxConcurrent` capacity, the request waits until:
+3. **Bounded Queueing:** If the server is at `MaxConcurrent` capacity, the request
+   joins the waiting queue — but only if fewer than `MaxWaiting` requests are
+   already queued. The queue is bounded, so a burst cannot accumulate an
+   unlimited number of goroutines, connections and request bodies.
+4. **Queue Full:** Requests beyond `MaxWaiting` are rejected *immediately* by
+   `QueueFullHandler` (default `503 Service Unavailable` with `Retry-After`),
+   wrapping `steady.ErrQueueFull`. No goroutine is parked.
+5. **Waiting:** A queued request waits until:
     - A slot becomes free (as another request finishes).
     - The `WaitTimeout` is reached.
-    - The client closes the connection (Context cancellation).
-4. **Timeout:** If the `WaitTimeout` is reached before a slot is freed, the `ErrorHandler` is triggered (defaulting to `503 Service Unavailable` with a `Retry-After` header).
+    - The client closes the connection (context cancellation), which frees its
+      queue slot immediately.
+6. **Timeout:** If `WaitTimeout` is reached before a slot is freed, `ErrorHandler`
+   is triggered (default `503 Service Unavailable` with a `Retry-After` header).
+
+```go
+stats := &steady.Stats{}
+
+e.Use(steady.New(steady.Config{
+	MaxConcurrent: 100,
+	MaxWaiting:    200, // at most 200 requests queue; the rest get 503
+	Stats:         stats,
+}))
+
+// Later, from a metrics handler:
+// stats.InFlight.Load(), stats.Waiting.Load(), stats.Rejected.Load()
+```
+
+Queue rejections wrap `steady.ErrQueueFull`, so a custom handler can label them,
+and callers/tests can distinguish them from a `WaitTimeout` rejection:
+
+```go
+QueueFullHandler: func(c *echo.Context) error {
+	c.Response().Header().Set("Retry-After", "2")
+	return echo.NewHTTPError(http.StatusServiceUnavailable, "queue is full").
+		Wrap(steady.ErrQueueFull)
+},
+
+// errors.Is(err, steady.ErrQueueFull) == true for queue-full rejections
+```
 
 ---
 

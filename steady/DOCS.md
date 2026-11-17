@@ -11,6 +11,7 @@ import "github.com/its-ernest/http-keystone/steady"
 - [Variables](<#variables>)
 - [func New\(config Config\) echo.MiddlewareFunc](<#New>)
 - [type Config](<#Config>)
+- [type Stats](<#Stats>)
 
 
 ## Variables
@@ -21,8 +22,15 @@ import "github.com/its-ernest/http-keystone/steady"
 var DefaultConfig = Config{
     Skipper:       middleware.DefaultSkipper,
     MaxConcurrent: 100,
+    MaxWaiting:    100,
     WaitTimeout:   10 * time.Second,
 }
+```
+
+<a name="ErrQueueFull"></a>ErrQueueFull is wrapped by the default QueueFullHandler when MaxWaiting is exceeded. Use errors.Is\(err, steady.ErrQueueFull\) to distinguish an immediate queue rejection from a WaitTimeout error in a custom handler.
+
+```go
+var ErrQueueFull = errors.New("steady: waiting queue is full")
 ```
 
 <a name="New"></a>
@@ -75,7 +83,7 @@ func main() {
 </details>
 
 <a name="Config"></a>
-## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/steady/config.go#L11-L26>)
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/steady/config.go#L30-L59>)
 
 Config defines the configuration for the steady middleware.
 
@@ -88,13 +96,43 @@ type Config struct {
     // Default is 100.
     MaxConcurrent int
 
+    // MaxWaiting is the maximum number of requests that may queue for a slot.
+    // Requests arriving when the queue is full are rejected immediately with
+    // QueueFullHandler instead of parking another goroutine.
+    // Default is 100. A negative value means unlimited.
+    MaxWaiting int
+
     // WaitTimeout is the maximum time a request will wait for a processing slot.
     // Default is 10 seconds.
     WaitTimeout time.Duration
 
-    // ErrorHandler is called when a request exceeds the limit.
+    // ErrorHandler is called when a request times out waiting for a slot.
     // Default returns 503 Service Unavailable with Retry-After header.
     ErrorHandler func(c *echo.Context) error
+
+    // QueueFullHandler is called when MaxWaiting is already reached.
+    // Default returns 503 Service Unavailable with Retry-After and wraps
+    // ErrQueueFull. If nil, ErrorHandler is used.
+    QueueFullHandler func(c *echo.Context) error
+
+    // Stats optionally receives live counters for this middleware instance.
+    Stats *Stats
+}
+```
+
+<a name="Stats"></a>
+## type [Stats](<https://github.com/its-ernest/http-keystone/blob/main/steady/config.go#L20-L27>)
+
+Stats exposes live counters for one middleware instance. All fields are safe for concurrent use. Pass a value in Config.Stats to observe a running middleware; a zero value is ready to use.
+
+```go
+type Stats struct {
+    // InFlight is the number of requests currently holding a slot.
+    InFlight atomic.Int64
+    // Waiting is the number of requests queued for a slot.
+    Waiting atomic.Int64
+    // Rejected counts queue-full and wait-timeout rejections.
+    Rejected atomic.Int64
 }
 ```
 
