@@ -1,4 +1,4 @@
-.PHONY: test ci docs act-ci act-docs
+.PHONY: test ci coverage docs act-ci act-docs
 
 # Run the test suite the same way CI does.
 test:
@@ -12,8 +12,14 @@ ci:
 	fi
 	go mod tidy
 	go vet ./...
-	go test -race ./...
+	go test -race -covermode=atomic -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
 	cd _examples/cache/otp_code_verification && go build ./...
+
+# Report statement coverage for the cached packages.
+coverage:
+	go test -race -covermode=atomic -coverprofile=coverage.out ./cache ./internal
+	go tool cover -func=coverage.out | tail -1
 
 # Regenerate the package documentation.
 docs:
