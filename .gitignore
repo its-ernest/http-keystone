@@ -1,0 +1,13 @@
+# Compiled example binaries (go build writes them beside their main.go).
+_examples/cache/otp_code_verification/otp-backend
+_examples/idempotency/idempotency-example
+
+# Coverage output from `make ci` / `make coverage`.
+coverage.out
+cover.out
+
+# Editor and OS files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
