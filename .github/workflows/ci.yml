@@ -58,6 +58,7 @@ jobs:
           done
           exit "$failed"
 
-      - name: Build example module
-        working-directory: _examples/cache/otp_code_verification
-        run: go build ./...
+      - name: Build example modules
+        run: |
+          (cd _examples/cache/otp_code_verification && go build ./...)
+          (cd _examples/idempotency && go build ./...)
