@@ -25,13 +25,18 @@ Package store provides the underlying persistence and locking mechanisms for the
   - [func \(m \*MemoryCounter\) StartEvictor\(ctx context.Context, interval time.Duration\)](<#MemoryCounter.StartEvictor>)
 - [type MemoryStore](<#MemoryStore>)
   - [func NewMemoryStore\(\) \*MemoryStore](<#NewMemoryStore>)
+  - [func NewMemoryStoreWithOptions\(opts MemoryStoreOptions\) \*MemoryStore](<#NewMemoryStoreWithOptions>)
+  - [func \(m \*MemoryStore\) Close\(\) error](<#MemoryStore.Close>)
   - [func \(m \*MemoryStore\) Delete\(\_ context.Context, key string\) error](<#MemoryStore.Delete>)
   - [func \(m \*MemoryStore\) Get\(\_ context.Context, key string\) \(\*Entry, error\)](<#MemoryStore.Get>)
   - [func \(m \*MemoryStore\) Lock\(\_ context.Context, key string, ttl time.Duration\) \(\*Lease, error\)](<#MemoryStore.Lock>)
   - [func \(m \*MemoryStore\) Refresh\(\_ context.Context, lease \*Lease, ttl time.Duration\) error](<#MemoryStore.Refresh>)
   - [func \(m \*MemoryStore\) Save\(\_ context.Context, key string, entry \*Entry, ttl time.Duration\) error](<#MemoryStore.Save>)
-  - [func \(m \*MemoryStore\) StartEvictor\(interval time.Duration, stop \<\-chan struct\{\}\)](<#MemoryStore.StartEvictor>)
+  - [func \(m \*MemoryStore\) StartEvictor\(ctx context.Context, interval time.Duration\)](<#MemoryStore.StartEvictor>)
+  - [func \(m \*MemoryStore\) Stats\(\) MemoryStoreStats](<#MemoryStore.Stats>)
   - [func \(m \*MemoryStore\) Unlock\(\_ context.Context, lease \*Lease\) error](<#MemoryStore.Unlock>)
+- [type MemoryStoreOptions](<#MemoryStoreOptions>)
+- [type MemoryStoreStats](<#MemoryStoreStats>)
 - [type RedisCounter](<#RedisCounter>)
   - [func NewRedisCounter\(addr string\) \*RedisCounter](<#NewRedisCounter>)
   - [func NewRedisCounterWithClient\(client \*redis.Client\) \*RedisCounter](<#NewRedisCounterWithClient>)
@@ -218,9 +223,9 @@ func (m *MemoryCounter) StartEvictor(ctx context.Context, interval time.Duration
 StartEvictor launches a background goroutine that removes expired keys every interval, stopping when ctx is done or Close is called. It is safe to call more than once; later calls replace the previous evictor.
 
 <a name="MemoryStore"></a>
-## type [MemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L23-L28>)
+## type [MemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L26-L43>)
 
-MemoryStore is an in\-memory implementation of the Store interface. It utilizes sync.Map for thread\-safe data operations and distributed\-style locking simulations, making it ideal for single\-instance applications.
+MemoryStore is an in\-memory implementation of the Store interface. It is safe for concurrent use and is ideal for single\-instance applications. Entries and their bodies are deep\-copied on the way in and on the way out, so callers can never mutate the store's data by holding on to an Entry they saved or received.
 
 ```go
 type MemoryStore struct {
@@ -229,16 +234,34 @@ type MemoryStore struct {
 ```
 
 <a name="NewMemoryStore"></a>
-### func [NewMemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L39>)
+### func [NewMemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L79>)
 
 ```go
 func NewMemoryStore() *MemoryStore
 ```
 
-NewMemoryStore initializes and returns a new pointer to a MemoryStore.
+NewMemoryStore initializes and returns a new, unbounded MemoryStore.
+
+<a name="NewMemoryStoreWithOptions"></a>
+### func [NewMemoryStoreWithOptions](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L86>)
+
+```go
+func NewMemoryStoreWithOptions(opts MemoryStoreOptions) *MemoryStore
+```
+
+NewMemoryStoreWithOptions initializes a MemoryStore with the given options. When Options.EvictInterval is positive, a background evictor is started and stopped by Close.
+
+<a name="MemoryStore.Close"></a>
+### func \(\*MemoryStore\) [Close](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L328>)
+
+```go
+func (m *MemoryStore) Close() error
+```
+
+Close stops a background evictor started by StartEvictor. It is safe to call multiple times and does not invalidate the store.
 
 <a name="MemoryStore.Delete"></a>
-### func \(\*MemoryStore\) [Delete](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L69>)
+### func \(\*MemoryStore\) [Delete](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L162>)
 
 ```go
 func (m *MemoryStore) Delete(_ context.Context, key string) error
@@ -247,16 +270,16 @@ func (m *MemoryStore) Delete(_ context.Context, key string) error
 Delete removes a specific entry from the memory store immediately.
 
 <a name="MemoryStore.Get"></a>
-### func \(\*MemoryStore\) [Get](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L45>)
+### func \(\*MemoryStore\) [Get](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L122>)
 
 ```go
 func (m *MemoryStore) Get(_ context.Context, key string) (*Entry, error)
 ```
 
-Get retrieves a cached Entry by its key. If the entry exists but has expired, it is deleted and ErrNotFound is returned.
+Get retrieves a cached Entry by its key. The returned entry is a deep copy, so mutating it does not affect the store. If the entry exists but has expired, it is deleted and ErrNotFound is returned.
 
 <a name="MemoryStore.Lock"></a>
-### func \(\*MemoryStore\) [Lock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L79>)
+### func \(\*MemoryStore\) [Lock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L187>)
 
 ```go
 func (m *MemoryStore) Lock(_ context.Context, key string, ttl time.Duration) (*Lease, error)
@@ -265,7 +288,7 @@ func (m *MemoryStore) Lock(_ context.Context, key string, ttl time.Duration) (*L
 Lock attempts to acquire an owned, non\-blocking lock for a given key. It returns a Lease identifying the owner, or ErrLockFailed if another caller holds a live lock. An expired lock may be taken over atomically: the check and the overwrite happen under one mutex, so two goroutines can never both observe the same expired lock and both succeed.
 
 <a name="MemoryStore.Refresh"></a>
-### func \(\*MemoryStore\) [Refresh](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L122>)
+### func \(\*MemoryStore\) [Refresh](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L230>)
 
 ```go
 func (m *MemoryStore) Refresh(_ context.Context, lease *Lease, ttl time.Duration) error
@@ -274,31 +297,77 @@ func (m *MemoryStore) Refresh(_ context.Context, lease *Lease, ttl time.Duration
 Refresh extends the TTL of the lock identified by lease. It returns ErrLockNotHeld when the lease is no longer the owner.
 
 <a name="MemoryStore.Save"></a>
-### func \(\*MemoryStore\) [Save](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L60>)
+### func \(\*MemoryStore\) [Save](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L142>)
 
 ```go
 func (m *MemoryStore) Save(_ context.Context, key string, entry *Entry, ttl time.Duration) error
 ```
 
-Save persists an Entry into memory with a specific time\-to\-live \(TTL\).
+Save persists a deep copy of an Entry into memory with a specific time\-to\-live \(TTL\). When MaxEntries is set and the store is full, the entry that expires soonest is evicted to make room.
 
 <a name="MemoryStore.StartEvictor"></a>
-### func \(\*MemoryStore\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L152>)
+### func \(\*MemoryStore\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L295>)
 
 ```go
-func (m *MemoryStore) StartEvictor(interval time.Duration, stop <-chan struct{})
+func (m *MemoryStore) StartEvictor(ctx context.Context, interval time.Duration)
 ```
 
-StartEvictor launches a background goroutine that periodically scans the store and removes expired entries. The goroutine stops when the provided stop channel is closed.
+StartEvictor launches a background goroutine that periodically scans the store and removes expired entries. The goroutine stops when ctx is canceled or Close is called, so no goroutine leaks. It is safe to call more than once; a later call replaces the previous evictor.
+
+<a name="MemoryStore.Stats"></a>
+### func \(\*MemoryStore\) [Stats](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L170>)
+
+```go
+func (m *MemoryStore) Stats() MemoryStoreStats
+```
+
+Stats returns a snapshot of the store's counters.
 
 <a name="MemoryStore.Unlock"></a>
-### func \(\*MemoryStore\) [Unlock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L104>)
+### func \(\*MemoryStore\) [Unlock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L212>)
 
 ```go
 func (m *MemoryStore) Unlock(_ context.Context, lease *Lease) error
 ```
 
 Unlock releases the lock identified by lease. It only deletes the entry when the stored token matches the lease, so a caller whose lock already expired and was re\-acquired cannot release the new owner's lock.
+
+<a name="MemoryStoreOptions"></a>
+## type [MemoryStoreOptions](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L46-L56>)
+
+MemoryStoreOptions configures a MemoryStore.
+
+```go
+type MemoryStoreOptions struct {
+    // MaxEntries bounds the number of live entries. When the limit is reached
+    // and a new key is saved, the entry that expires soonest is evicted to
+    // make room. Zero means unlimited.
+    MaxEntries int
+
+    // StartEvictor launches a background evictor that removes expired entries
+    // every interval. The zero value disables it. Use StartEvictor directly
+    // when you need to tie the evictor to a context you control.
+    EvictInterval time.Duration
+}
+```
+
+<a name="MemoryStoreStats"></a>
+## type [MemoryStoreStats](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L67-L76>)
+
+MemoryStoreStats is a point\-in\-time snapshot of a MemoryStore's counters.
+
+```go
+type MemoryStoreStats struct {
+    // Hits is the number of successful Get calls.
+    Hits int64
+    // Misses is the number of Get calls that found nothing (including expired).
+    Misses int64
+    // Evictions is the number of entries removed to respect MaxEntries.
+    Evictions int64
+    // Size is the number of live entries right now.
+    Size int
+}
+```
 
 <a name="RedisCounter"></a>
 ## type [RedisCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/redis_counter.go#L23-L26>)
