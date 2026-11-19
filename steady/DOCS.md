@@ -24,6 +24,7 @@ var DefaultConfig = Config{
     MaxConcurrent: 100,
     MaxWaiting:    100,
     WaitTimeout:   10 * time.Second,
+    RetryAfter:    time.Second,
 }
 ```
 
@@ -34,7 +35,7 @@ var ErrQueueFull = errors.New("steady: waiting queue is full")
 ```
 
 <a name="New"></a>
-## func [New](<https://github.com/its-ernest/http-keystone/blob/main/steady/middleware.go#L12>)
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/steady/middleware.go#L14>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -83,7 +84,7 @@ func main() {
 </details>
 
 <a name="Config"></a>
-## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/steady/config.go#L30-L59>)
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/steady/config.go#L30-L69>)
 
 Config defines the configuration for the steady middleware.
 
@@ -106,8 +107,18 @@ type Config struct {
     // Default is 10 seconds.
     WaitTimeout time.Duration
 
+    // RetryAfter is how long the default rejection handlers tell clients to
+    // wait before retrying, via the Retry-After header. It is deliberately
+    // independent of WaitTimeout: deriving it from a short WaitTimeout yields
+    // "Retry-After: 0", which tells clients to retry immediately and invites a
+    // thundering herd. The emitted value is max(1, ceil(RetryAfter seconds)),
+    // so it is never less than one second. Default is 1 second.
+    RetryAfter time.Duration
+
     // ErrorHandler is called when a request times out waiting for a slot.
-    // Default returns 503 Service Unavailable with Retry-After header.
+    // Default returns 503 Service Unavailable with a Retry-After header.
+    // A custom ErrorHandler owns its own Retry-After; the middleware never
+    // overwrites a value it sets.
     ErrorHandler func(c *echo.Context) error
 
     // QueueFullHandler is called when MaxWaiting is already reached.

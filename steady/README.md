@@ -66,8 +66,9 @@ func main() {
 | `MaxConcurrent` | `int` | `100` | Maximum number of requests to process at once. |
 | `MaxWaiting` | `int` | `100` | Maximum number of requests that may queue. `0` uses the default; a negative value means unlimited. |
 | `WaitTimeout` | `time.Duration` | `10s` | How long a request will wait in the queue for a slot. |
+| `RetryAfter` | `time.Duration` | `1s` | Value (in whole seconds, rounded up, min `1`) the default rejection handlers send as `Retry-After`. Independent of `WaitTimeout` so a short wait never yields `Retry-After: 0`. |
 | `Skipper` | `middleware.Skipper` | `DefaultSkipper` | Function to skip this middleware for certain routes. |
-| `ErrorHandler` | `func(*echo.Context) error` | *Internal* | Called when a request times out in the queue (503 + `Retry-After`). |
+| `ErrorHandler` | `func(*echo.Context) error` | *Internal* | Called when a request times out in the queue (503 + `Retry-After`). A custom handler's own `Retry-After` is respected. |
 | `QueueFullHandler` | `func(*echo.Context) error` | *Internal* | Called when `MaxWaiting` is already reached. Default is 503 + `Retry-After`, wrapping `ErrQueueFull`. |
 | `Stats` | `*Stats` | `nil` | Optional live counters: `InFlight`, `Waiting`, `Rejected`. |
 
@@ -91,6 +92,9 @@ func main() {
       queue slot immediately.
 6. **Timeout:** If `WaitTimeout` is reached before a slot is freed, `ErrorHandler`
    is triggered (default `503 Service Unavailable` with a `Retry-After` header).
+   The `Retry-After` value comes from `RetryAfter` (default `1s`), rounded up to a
+   whole second and never less than `1`, so a short `WaitTimeout` never produces
+   `Retry-After: 0`.
 
 ```go
 stats := &steady.Stats{}
