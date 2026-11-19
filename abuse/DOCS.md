@@ -39,7 +39,7 @@ var DefaultConfig = Config{
 ```
 
 <a name="New"></a>
-## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L95>)
+## func [New](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L96>)
 
 ```go
 func New(config Config) echo.MiddlewareFunc
@@ -84,7 +84,7 @@ func main() {
 </details>
 
 <a name="NewForwardedIPKeyFunc"></a>
-## func [NewForwardedIPKeyFunc](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L243>)
+## func [NewForwardedIPKeyFunc](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L248>)
 
 ```go
 func NewForwardedIPKeyFunc(options ...echo.TrustOption) func(c *echo.Context) string
@@ -104,7 +104,7 @@ e.Use(abuse.New(abuse.Config{
 Without trusted proxies \(for example when the app faces the internet directly\), use echo.ExtractIPDirect with NewIPKeyFunc so headers are ignored completely.
 
 <a name="NewIPKeyFunc"></a>
-## func [NewIPKeyFunc](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L252>)
+## func [NewIPKeyFunc](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L257>)
 
 ```go
 func NewIPKeyFunc(extractor echo.IPExtractor) func(c *echo.Context) string
@@ -113,7 +113,7 @@ func NewIPKeyFunc(extractor echo.IPExtractor) func(c *echo.Context) string
 NewIPKeyFunc adapts an echo.IPExtractor into a KeyFunc. A nil extractor falls back to c.RealIP\(\).
 
 <a name="Config"></a>
-## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L35-L75>)
+## type [Config](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L36-L76>)
 
 Config defines the settings for the abuse detection middleware.
 
@@ -162,7 +162,7 @@ type Config struct {
 ```
 
 <a name="Rule"></a>
-## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L21-L32>)
+## type [Rule](<https://github.com/its-ernest/http-keystone/blob/main/abuse/middleware.go#L22-L33>)
 
 Rule defines the "heat" points added for specific path patterns. Path supports exact matches \(e.g., "/.env"\) and a trailing "\*" wildcard on a path\-segment boundary: "/admin\*" matches "/admin" and "/admin/config" but not "/administrator".
 

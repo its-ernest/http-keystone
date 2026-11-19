@@ -14,6 +14,7 @@ Package store provides the underlying persistence and locking mechanisms for the
 - [type Counter](<#Counter>)
 - [type Entry](<#Entry>)
 - [type Lease](<#Lease>)
+- [type Locker](<#Locker>)
 - [type MemoryCounter](<#MemoryCounter>)
   - [func NewMemoryCounter\(\) \*MemoryCounter](<#NewMemoryCounter>)
   - [func NewMemoryCounterWithLimit\(maxEntries int\) \*MemoryCounter](<#NewMemoryCounterWithLimit>)
@@ -37,6 +38,7 @@ Package store provides the underlying persistence and locking mechanisms for the
   - [func \(m \*MemoryStore\) Unlock\(\_ context.Context, lease \*Lease\) error](<#MemoryStore.Unlock>)
 - [type MemoryStoreOptions](<#MemoryStoreOptions>)
 - [type MemoryStoreStats](<#MemoryStoreStats>)
+- [type Reader](<#Reader>)
 - [type RedisCounter](<#RedisCounter>)
   - [func NewRedisCounter\(addr string\) \*RedisCounter](<#NewRedisCounter>)
   - [func NewRedisCounterWithClient\(client \*redis.Client\) \*RedisCounter](<#NewRedisCounterWithClient>)
@@ -59,6 +61,7 @@ Package store provides the underlying persistence and locking mechanisms for the
   - [func \(r \*RedisStore\) Unlock\(ctx context.Context, lease \*Lease\) error](<#RedisStore.Unlock>)
 - [type RedisStoreOptions](<#RedisStoreOptions>)
 - [type Store](<#Store>)
+- [type Writer](<#Writer>)
 
 
 ## Variables
@@ -93,13 +96,14 @@ var ErrCounterOverflow = errors.New("store: counter value overflows int")
 ```
 
 <a name="Counter"></a>
-## type [Counter](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L76-L86>)
+## type [Counter](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L93-L104>)
 
 Counter defines a simpler interface for numeric tracking \(Abuse, Rate Limiting\)
 
 ```go
 type Counter interface {
-    // Get returns the current count for a key
+    // Get returns the current count for a key. It returns ErrNotFound when the
+    // key is missing or has expired, matching Store.Get.
     Get(ctx context.Context, key string) (int, error)
 
     // Increment adds n to the key and returns the new total.
@@ -139,6 +143,31 @@ type Lease struct {
 }
 ```
 
+<a name="Locker"></a>
+## type [Locker](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L74-L90>)
+
+Locker provides owned, expiring locks on top of a Store. It is optional: a Store used only as a cache does not need to implement it.
+
+```go
+type Locker interface {
+    // Lock attempts to acquire an owned lock for key that expires after ttl.
+    // On success it returns a Lease identifying the owner. It returns
+    // ErrLockFailed when another owner holds a live lock for the key. A
+    // non-positive ttl creates a lock that does not expire on its own.
+    Lock(ctx context.Context, key string, ttl time.Duration) (*Lease, error)
+
+    // Unlock releases the lock identified by lease. Unlocking with a lease
+    // that is no longer the owner (it expired and was re-acquired) is a no-op
+    // and never releases the current owner's lock.
+    Unlock(ctx context.Context, lease *Lease) error
+
+    // Refresh extends the TTL of the lock identified by lease. It returns
+    // ErrLockNotHeld when the lease is no longer the owner. A non-positive ttl
+    // makes the lock stop expiring on its own.
+    Refresh(ctx context.Context, lease *Lease, ttl time.Duration) error
+}
+```
+
 <a name="MemoryCounter"></a>
 ## type [MemoryCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L12-L21>)
 
@@ -169,7 +198,7 @@ func NewMemoryCounterWithLimit(maxEntries int) *MemoryCounter
 NewMemoryCounterWithLimit returns a MemoryCounter that keeps at most maxEntries keys. When the limit is reached, the key that expires first is evicted to make room for the new one. A maxEntries value \<= 0 means unlimited.
 
 <a name="MemoryCounter.Close"></a>
-### func \(\*MemoryCounter\) [Close](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L141>)
+### func \(\*MemoryCounter\) [Close](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L145>)
 
 ```go
 func (m *MemoryCounter) Close() error
@@ -184,7 +213,7 @@ Close stops a background evictor started by StartEvictor. It is safe to call mul
 func (m *MemoryCounter) Get(_ context.Context, key string) (int, error)
 ```
 
-Get returns the current count for key. An expired key is deleted and 0 is returned.
+Get returns the current count for key. An expired key is deleted and ErrNotFound is returned, matching Store.Get's missing\-key semantics.
 
 <a name="MemoryCounter.Increment"></a>
 ### func \(\*MemoryCounter\) [Increment](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L43>)
@@ -196,7 +225,7 @@ func (m *MemoryCounter) Increment(ctx context.Context, key string, n int, ttl ti
 
 
 <a name="MemoryCounter.Len"></a>
-### func \(\*MemoryCounter\) [Len](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L97>)
+### func \(\*MemoryCounter\) [Len](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L101>)
 
 ```go
 func (m *MemoryCounter) Len() int
@@ -214,7 +243,7 @@ func (m *MemoryCounter) Reset(_ context.Context, key string) error
 
 
 <a name="MemoryCounter.StartEvictor"></a>
-### func \(\*MemoryCounter\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L108>)
+### func \(\*MemoryCounter\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/mem_counter.go#L112>)
 
 ```go
 func (m *MemoryCounter) StartEvictor(ctx context.Context, interval time.Duration)
@@ -369,6 +398,19 @@ type MemoryStoreStats struct {
 }
 ```
 
+<a name="Reader"></a>
+## type [Reader](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L48-L52>)
+
+Reader is the read half of a Store: it fetches entries by key.
+
+```go
+type Reader interface {
+    // Get retrieves an entry by key. It returns ErrNotFound when the key is
+    // missing or has expired.
+    Get(ctx context.Context, key string) (*Entry, error)
+}
+```
+
 <a name="RedisCounter"></a>
 ## type [RedisCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/redis_counter.go#L23-L26>)
 
@@ -425,7 +467,7 @@ Close closes the underlying client when the counter owns it. It is a no\-op for 
 func (c *RedisCounter) Get(ctx context.Context, key string) (int, error)
 ```
 
-Get returns the current value for key. A missing or expired key returns 0 with a nil error, matching the in\-memory Counter implementation.
+Get returns the current value for key. A missing or expired key returns ErrNotFound, matching the in\-memory Counter implementation.
 
 <a name="RedisCounter.Increment"></a>
 ### func \(\*RedisCounter\) [Increment](<https://github.com/its-ernest/http-keystone/blob/main/store/redis_counter.go#L86>)
@@ -582,36 +624,29 @@ type RedisStoreOptions struct {
 ```
 
 <a name="Store"></a>
-## type [Store](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L48-L73>)
+## type [Store](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L67-L70>)
 
-Store defines the contract for any backend \(Memory, Redis, etc.\)
+Store defines the contract for any backend that can read and write entries \(Memory, Redis, etc.\). It is a Reader and a Writer. Backends that can also provide owned locks implement Locker in addition; callers that only need persistence should depend on Store, not Locker.
 
 ```go
 type Store interface {
-    // Get retrieves an entry by key
-    Get(ctx context.Context, key string) (*Entry, error)
+    Reader
+    Writer
+}
+```
 
-    // Save stores an entry with a specific TTL
+<a name="Writer"></a>
+## type [Writer](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L55-L61>)
+
+Writer is the write half of a Store: it saves and deletes entries.
+
+```go
+type Writer interface {
+    // Save stores an entry with a specific TTL.
     Save(ctx context.Context, key string, entry *Entry, ttl time.Duration) error
 
-    // Delete removes an entry
+    // Delete removes an entry.
     Delete(ctx context.Context, key string) error
-
-    // Lock attempts to acquire an owned lock for key that expires after ttl.
-    // On success it returns a Lease identifying the owner. It returns
-    // ErrLockFailed when another owner holds a live lock for the key. A
-    // non-positive ttl creates a lock that does not expire on its own.
-    Lock(ctx context.Context, key string, ttl time.Duration) (*Lease, error)
-
-    // Unlock releases the lock identified by lease. Unlocking with a lease
-    // that is no longer the owner (it expired and was re-acquired) is a no-op
-    // and never releases the current owner's lock.
-    Unlock(ctx context.Context, lease *Lease) error
-
-    // Refresh extends the TTL of the lock identified by lease. It returns
-    // ErrLockNotHeld when the lease is no longer the owner. A non-positive ttl
-    // makes the lock stop expiring on its own.
-    Refresh(ctx context.Context, lease *Lease, ttl time.Duration) error
 }
 ```
 

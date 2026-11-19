@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"sync"
@@ -40,7 +41,7 @@ func TestMemoryCounterExpiredKeyIsRemovedOnAccess(t *testing.T) {
 
 	require.True(t, waitFor(t, 2*time.Second, func() bool {
 		score, getErr := c.Get(ctx, "1.2.3.4")
-		return getErr == nil && score == 0
+		return errors.Is(getErr, ErrNotFound) && score == 0
 	}))
 
 	assert.Equal(t, 0, c.Len(), "Get must delete the expired key, not just hide it")
@@ -100,10 +101,9 @@ func TestMemoryCounterMaxEntries(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, c.Len(), "memory must stay bounded")
-	score, err := c.Get(ctx, "a")
-	require.NoError(t, err)
-	assert.Zero(t, score, "the earliest-expiring key must be evicted")
-	score, err = c.Get(ctx, "c")
+	_, err = c.Get(ctx, "a")
+	assert.ErrorIs(t, err, ErrNotFound, "the earliest-expiring key must be evicted")
+	score, err := c.Get(ctx, "c")
 	require.NoError(t, err)
 	assert.Equal(t, 1, score)
 }

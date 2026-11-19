@@ -252,7 +252,7 @@ func TestIdempotentInFlightReject(t *testing.T) {
 // when FailClosed is false.
 func TestIdempotentStoreFailureFailsOpen(t *testing.T) {
 	e := echo.New()
-	st := &failingStore{Store: store.NewMemoryStore()}
+	st := &failingStore{Store: store.NewMemoryStore(), Locker: store.NewMemoryStore()}
 	calls := 0
 
 	handler := New(Config{Store: st, TTL: time.Minute})(func(c *echo.Context) error {
@@ -288,9 +288,11 @@ func TestIdempotentKeyFuncOverridesHeader(t *testing.T) {
 	assert.Equal(t, "true", rec2.Header().Get("Idempotency-Replayed"))
 }
 
-// failingStore fails every Get with an error.
+// failingStore fails every Get with an error but otherwise behaves like a
+// real store (including locks, so it satisfies LockingStore).
 type failingStore struct {
 	store.Store
+	store.Locker
 }
 
 func (s *failingStore) Get(ctx context.Context, key string) (*store.Entry, error) {

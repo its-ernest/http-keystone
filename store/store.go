@@ -44,17 +44,34 @@ type Lease struct {
 	Token string
 }
 
-// Store defines the contract for any backend (Memory, Redis, etc.)
-type Store interface {
-	// Get retrieves an entry by key
+// Reader is the read half of a Store: it fetches entries by key.
+type Reader interface {
+	// Get retrieves an entry by key. It returns ErrNotFound when the key is
+	// missing or has expired.
 	Get(ctx context.Context, key string) (*Entry, error)
+}
 
-	// Save stores an entry with a specific TTL
+// Writer is the write half of a Store: it saves and deletes entries.
+type Writer interface {
+	// Save stores an entry with a specific TTL.
 	Save(ctx context.Context, key string, entry *Entry, ttl time.Duration) error
 
-	// Delete removes an entry
+	// Delete removes an entry.
 	Delete(ctx context.Context, key string) error
+}
 
+// Store defines the contract for any backend that can read and write entries
+// (Memory, Redis, etc.). It is a Reader and a Writer. Backends that can also
+// provide owned locks implement Locker in addition; callers that only need
+// persistence should depend on Store, not Locker.
+type Store interface {
+	Reader
+	Writer
+}
+
+// Locker provides owned, expiring locks on top of a Store. It is optional:
+// a Store used only as a cache does not need to implement it.
+type Locker interface {
 	// Lock attempts to acquire an owned lock for key that expires after ttl.
 	// On success it returns a Lease identifying the owner. It returns
 	// ErrLockFailed when another owner holds a live lock for the key. A
@@ -74,7 +91,8 @@ type Store interface {
 
 // Counter defines a simpler interface for numeric tracking (Abuse, Rate Limiting)
 type Counter interface {
-	// Get returns the current count for a key
+	// Get returns the current count for a key. It returns ErrNotFound when the
+	// key is missing or has expired, matching Store.Get.
 	Get(ctx context.Context, key string) (int, error)
 
 	// Increment adds n to the key and returns the new total.
@@ -84,3 +102,14 @@ type Counter interface {
 	// Reset clears the counter
 	Reset(ctx context.Context, key string) error
 }
+
+// Compile-time assertions that the concrete backends satisfy the interfaces.
+var (
+	_ Store   = (*MemoryStore)(nil)
+	_ Locker  = (*MemoryStore)(nil)
+	_ Counter = (*MemoryCounter)(nil)
+
+	_ Store   = (*RedisStore)(nil)
+	_ Locker  = (*RedisStore)(nil)
+	_ Counter = (*RedisCounter)(nil)
+)

@@ -77,8 +77,8 @@ func (m *MemoryCounter) Reset(_ context.Context, key string) error {
 	return nil
 }
 
-// Get returns the current count for key. An expired key is deleted and 0 is
-// returned.
+// Get returns the current count for key. An expired key is deleted and
+// ErrNotFound is returned, matching Store.Get's missing-key semantics.
 func (m *MemoryCounter) Get(_ context.Context, key string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -87,10 +87,14 @@ func (m *MemoryCounter) Get(_ context.Context, key string) (int, error) {
 	if exp, ok := m.expiries[key]; ok && now.After(exp) {
 		delete(m.counts, key)
 		delete(m.expiries, key)
-		return 0, nil
+		return 0, ErrNotFound
 	}
 
-	return m.counts[key], nil
+	value, ok := m.counts[key]
+	if !ok {
+		return 0, ErrNotFound
+	}
+	return value, nil
 }
 
 // Len returns the number of tracked keys, excluding expired ones.

@@ -25,11 +25,21 @@ const (
 	InFlightWait
 )
 
+// LockingStore is the store capability idempotency needs: it must read and
+// write entries (store.Store) and provide owned locks (store.Locker). Both
+// MemoryStore and RedisStore satisfy it.
+type LockingStore interface {
+	store.Store
+	store.Locker
+}
+
 // Config defines the settings for the idempotency middleware.
 type Config struct {
 	// Store persists the fingerprint and the stored response. It must be a
-	// store.Store because idempotency needs both Get/Save and owned locks.
-	Store store.Store
+	// LockingStore (a store.Store that also provides owned locks), because
+	// idempotency relies on the lock to guarantee a single request runs at a
+	// time per key.
+	Store LockingStore
 
 	// TTL is how long a completed response is remembered so a later retry
 	// with the same key replays it instead of running the handler again.
