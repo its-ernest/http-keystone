@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,13 +19,40 @@ type item struct {
 }
 
 // MemoryStore is an in-memory implementation of the Store interface.
-// It utilizes sync.Map for thread-safe data operations and distributed-style
-// locking simulations, making it ideal for single-instance applications.
+// It is safe for concurrent use and is ideal for single-instance
+// applications. Entries and their bodies are deep-copied on the way in and on
+// the way out, so callers can never mutate the store's data by holding on to
+// an Entry they saved or received.
 type MemoryStore struct {
-	data sync.Map
+	mu   sync.Mutex
+	data map[string]item
+
+	// maxEntries bounds the number of live entries. Zero means unlimited.
+	maxEntries int
+
+	// hits, misses, evictions are cumulative counters exposed via Stats.
+	hits      atomic.Int64
+	misses    atomic.Int64
+	evictions atomic.Int64
+
+	// stop is non-nil while a background evictor is running.
+	stop chan struct{}
 
 	locksMu sync.Mutex
 	locks   sync.Map
+}
+
+// MemoryStoreOptions configures a MemoryStore.
+type MemoryStoreOptions struct {
+	// MaxEntries bounds the number of live entries. When the limit is reached
+	// and a new key is saved, the entry that expires soonest is evicted to
+	// make room. Zero means unlimited.
+	MaxEntries int
+
+	// StartEvictor launches a background evictor that removes expired entries
+	// every interval. The zero value disables it. Use StartEvictor directly
+	// when you need to tie the evictor to a context you control.
+	EvictInterval time.Duration
 }
 
 // lockItem stores metadata about an active mutex-like lock. The token
@@ -35,40 +63,120 @@ type lockItem struct {
 	expiresAt time.Time
 }
 
-// NewMemoryStore initializes and returns a new pointer to a MemoryStore.
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{}
+// MemoryStoreStats is a point-in-time snapshot of a MemoryStore's counters.
+type MemoryStoreStats struct {
+	// Hits is the number of successful Get calls.
+	Hits int64
+	// Misses is the number of Get calls that found nothing (including expired).
+	Misses int64
+	// Evictions is the number of entries removed to respect MaxEntries.
+	Evictions int64
+	// Size is the number of live entries right now.
+	Size int
 }
 
-// Get retrieves a cached Entry by its key. If the entry exists but has
+// NewMemoryStore initializes and returns a new, unbounded MemoryStore.
+func NewMemoryStore() *MemoryStore {
+	return NewMemoryStoreWithOptions(MemoryStoreOptions{})
+}
+
+// NewMemoryStoreWithOptions initializes a MemoryStore with the given options.
+// When Options.EvictInterval is positive, a background evictor is started and
+// stopped by Close.
+func NewMemoryStoreWithOptions(opts MemoryStoreOptions) *MemoryStore {
+	m := &MemoryStore{
+		data:       make(map[string]item),
+		maxEntries: opts.MaxEntries,
+	}
+	if m.maxEntries < 0 {
+		m.maxEntries = 0
+	}
+	if opts.EvictInterval > 0 {
+		m.StartEvictor(context.Background(), opts.EvictInterval)
+	}
+	return m
+}
+
+// clone returns a deep copy of the entry so the store never aliases caller
+// memory.
+func (e *Entry) clone() *Entry {
+	if e == nil {
+		return nil
+	}
+	out := &Entry{Status: e.Status}
+	if e.Header != nil {
+		out.Header = make(map[string][]string, len(e.Header))
+		for name, values := range e.Header {
+			out.Header[name] = append([]string(nil), values...)
+		}
+	}
+	if e.Body != nil {
+		out.Body = append([]byte(nil), e.Body...)
+	}
+	return out
+}
+
+// Get retrieves a cached Entry by its key. The returned entry is a deep copy,
+// so mutating it does not affect the store. If the entry exists but has
 // expired, it is deleted and ErrNotFound is returned.
 func (m *MemoryStore) Get(_ context.Context, key string) (*Entry, error) {
-	val, ok := m.data.Load(key)
-	if !ok {
-		return nil, ErrNotFound
+	m.mu.Lock()
+	i, ok := m.data[key]
+	if ok && !time.Now().Before(i.expiresAt) {
+		delete(m.data, key)
+		ok = false
 	}
+	m.mu.Unlock()
 
-	i := val.(item)
-	if time.Now().After(i.expiresAt) {
-		m.data.Delete(key)
+	if !ok {
+		m.misses.Add(1)
 		return nil, ErrNotFound
 	}
-	return i.entry, nil
+	m.hits.Add(1)
+	return i.entry.clone(), nil
 }
 
-// Save persists an Entry into memory with a specific time-to-live (TTL).
+// Save persists a deep copy of an Entry into memory with a specific
+// time-to-live (TTL). When MaxEntries is set and the store is full, the entry
+// that expires soonest is evicted to make room.
 func (m *MemoryStore) Save(_ context.Context, key string, entry *Entry, ttl time.Duration) error {
-	m.data.Store(key, item{
-		entry:     entry,
-		expiresAt: time.Now().Add(ttl),
-	})
+	stored := entry.clone()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	m.evictExpiredLocked(now)
+
+	if m.maxEntries > 0 {
+		if _, exists := m.data[key]; !exists && len(m.data) >= m.maxEntries {
+			m.evictSoonestLocked(now)
+		}
+	}
+
+	m.data[key] = item{entry: stored, expiresAt: now.Add(ttl)}
 	return nil
 }
 
 // Delete removes a specific entry from the memory store immediately.
 func (m *MemoryStore) Delete(_ context.Context, key string) error {
-	m.data.Delete(key)
+	m.mu.Lock()
+	delete(m.data, key)
+	m.mu.Unlock()
 	return nil
+}
+
+// Stats returns a snapshot of the store's counters.
+func (m *MemoryStore) Stats() MemoryStoreStats {
+	m.mu.Lock()
+	size := len(m.data)
+	m.mu.Unlock()
+	return MemoryStoreStats{
+		Hits:      m.hits.Load(),
+		Misses:    m.misses.Load(),
+		Evictions: m.evictions.Load(),
+		Size:      size,
+	}
 }
 
 // Lock attempts to acquire an owned, non-blocking lock for a given key.
@@ -146,26 +254,83 @@ func newLockToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+// evictExpiredLocked removes every expired entry. The caller must hold m.mu.
+func (m *MemoryStore) evictExpiredLocked(now time.Time) {
+	for key, i := range m.data {
+		if !now.Before(i.expiresAt) {
+			delete(m.data, key)
+		}
+	}
+}
+
+// evictSoonestLocked removes the live entry that expires soonest (ties broken
+// by key name) to make room. The caller must hold m.mu.
+func (m *MemoryStore) evictSoonestLocked(now time.Time) {
+	var (
+		victim  string
+		expiry  time.Time
+		expired bool
+		found   bool
+	)
+	for key, i := range m.data {
+		e := i.expiresAt
+		isExpired := !now.Before(e)
+		if !found || (isExpired && !expired) ||
+			(isExpired == expired && e.Before(expiry)) ||
+			(isExpired == expired && e.Equal(expiry) && key < victim) {
+			victim, expiry, expired, found = key, e, isExpired, true
+		}
+	}
+	if !found {
+		return
+	}
+	delete(m.data, victim)
+	m.evictions.Add(1)
+}
+
 // StartEvictor launches a background goroutine that periodically scans the
-// store and removes expired entries. The goroutine stops when the provided
-// stop channel is closed.
-func (m *MemoryStore) StartEvictor(interval time.Duration, stop <-chan struct{}) {
+// store and removes expired entries. The goroutine stops when ctx is canceled
+// or Close is called, so no goroutine leaks. It is safe to call more than
+// once; a later call replaces the previous evictor.
+func (m *MemoryStore) StartEvictor(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+
+	m.mu.Lock()
+	stop := make(chan struct{})
+	if m.stop != nil {
+		close(m.stop)
+	}
+	m.stop = stop
+	m.mu.Unlock()
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				m.data.Range(func(k, v interface{}) bool {
-					i := v.(item)
-					if time.Now().After(i.expiresAt) {
-						m.data.Delete(k)
-					}
-					return true
-				})
+				m.mu.Lock()
+				m.evictExpiredLocked(time.Now())
+				m.mu.Unlock()
 			case <-stop:
+				return
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
+}
+
+// Close stops a background evictor started by StartEvictor. It is safe to call
+// multiple times and does not invalidate the store.
+func (m *MemoryStore) Close() error {
+	m.mu.Lock()
+	if m.stop != nil {
+		close(m.stop)
+		m.stop = nil
+	}
+	m.mu.Unlock()
+	return nil
 }
