@@ -36,7 +36,7 @@ func (s *countingStore) Get(ctx context.Context, key string) (*store.Entry, erro
 	return s.MemoryStore.Get(ctx, key)
 }
 
-func (s *countingStore) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+func (s *countingStore) Lock(ctx context.Context, key string, ttl time.Duration) (*store.Lease, error) {
 	s.mu.Lock()
 	s.lockTTL = ttl
 	s.mu.Unlock()
@@ -154,10 +154,10 @@ func TestCacheWaiterRetriesAreBounded(t *testing.T) {
 
 	// Hold the lock as another request would.
 	key := cacheKey(mustContext(t, e, "/busy"), resolvedConfig(cfg))
-	locked, err := st.Lock(context.Background(), key+":lock", time.Minute)
+	lease, err := st.Lock(context.Background(), key+":lock", time.Minute)
 	require.NoError(t, err)
-	require.True(t, locked)
-	defer st.Unlock(context.Background(), key+":lock")
+	require.NotNil(t, lease)
+	defer st.Unlock(context.Background(), lease)
 
 	c, rec := newCacheContext(t, e, http.MethodGet, "/busy")
 	require.NoError(t, handler(c))
@@ -185,10 +185,10 @@ func TestCacheWaiterReturnsContextError(t *testing.T) {
 	})
 
 	key := cacheKey(mustContext(t, e, "/cancel"), resolvedConfig(cfg))
-	locked, err := st.Lock(context.Background(), key+":lock", time.Minute)
+	lease, err := st.Lock(context.Background(), key+":lock", time.Minute)
 	require.NoError(t, err)
-	require.True(t, locked)
-	defer st.Unlock(context.Background(), key+":lock")
+	require.NotNil(t, lease)
+	defer st.Unlock(context.Background(), lease)
 
 	req := httptest.NewRequest(http.MethodGet, "/cancel", nil)
 	ctx, cancel := context.WithCancel(req.Context())
@@ -314,10 +314,10 @@ func TestCacheWaiterReplaysVaryEntry(t *testing.T) {
 
 	// Hold the lock under the gzip key so a second gzip request would wait.
 	key := cacheKey(prime, resolvedConfig(cfg))
-	locked, err := st.Lock(context.Background(), key+":lock", time.Minute)
+	lease, err := st.Lock(context.Background(), key+":lock", time.Minute)
 	require.NoError(t, err)
-	require.True(t, locked)
-	defer st.Unlock(context.Background(), key+":lock")
+	require.NotNil(t, lease)
+	defer st.Unlock(context.Background(), lease)
 
 	// The waiter finds the entry immediately and must not touch the lock.
 	waiter, rec := newCacheContextWithHeaders(t, e, "/vary", map[string]string{"Accept-Encoding": "gzip"})

@@ -38,9 +38,9 @@ func (s *faultyStore) Save(ctx context.Context, key string, entry *store.Entry, 
 	return s.Store.Save(ctx, key, entry, ttl)
 }
 
-func (s *faultyStore) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+func (s *faultyStore) Lock(ctx context.Context, key string, ttl time.Duration) (*store.Lease, error) {
 	if s.lockErr != nil {
-		return false, s.lockErr
+		return nil, s.lockErr
 	}
 	return s.Store.Lock(ctx, key, ttl)
 }

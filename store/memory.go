@@ -4,6 +4,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -18,14 +21,18 @@ type item struct {
 // It utilizes sync.Map for thread-safe data operations and distributed-style
 // locking simulations, making it ideal for single-instance applications.
 type MemoryStore struct {
-	data  sync.Map
-	locks sync.Map
+	data sync.Map
+
+	locksMu sync.Mutex
+	locks   sync.Map
 }
 
-// lockItem stores metadata about an active mutex-like lock.
+// lockItem stores metadata about an active mutex-like lock. The token
+// identifies the owner so Unlock and Refresh can refuse to touch a lock that
+// has expired and been re-acquired by someone else.
 type lockItem struct {
-	acquiredAt time.Time
-	ttl        time.Duration
+	token     string
+	expiresAt time.Time
 }
 
 // NewMemoryStore initializes and returns a new pointer to a MemoryStore.
@@ -64,35 +71,79 @@ func (m *MemoryStore) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-// Lock attempts to acquire a non-blocking lock for a given key.
-// It returns true if the lock was successfully acquired or if a previous
-// lock has already expired. This is essential for preventing "thundering herd"
-// issues in idempotency middleware.
-func (m *MemoryStore) Lock(_ context.Context, key string, ttl time.Duration) (bool, error) {
+// Lock attempts to acquire an owned, non-blocking lock for a given key.
+// It returns a Lease identifying the owner, or ErrLockFailed if another caller
+// holds a live lock. An expired lock may be taken over atomically: the check
+// and the overwrite happen under one mutex, so two goroutines can never both
+// observe the same expired lock and both succeed.
+func (m *MemoryStore) Lock(_ context.Context, key string, ttl time.Duration) (*Lease, error) {
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+
 	now := time.Now()
+	token := newLockToken()
 
-	val, loaded := m.locks.LoadOrStore(key, lockItem{
-		acquiredAt: now,
-		ttl:        ttl,
-	})
-
-	if loaded {
+	if val, ok := m.locks.Load(key); ok {
 		existing := val.(lockItem)
-		if now.Sub(existing.acquiredAt) > existing.ttl {
-			// lock expired, overwrite
-			m.locks.Store(key, lockItem{acquiredAt: now, ttl: ttl})
-			return true, nil
+		if now.Before(existing.expiresAt) {
+			return nil, ErrLockFailed
 		}
-		return false, nil
+		// The lock expired; take it over. LoadAndStore is not needed because
+		// the mutex already excludes other Lock/Unlock/Refresh callers.
+		m.locks.Store(key, lockItem{token: token, expiresAt: now.Add(ttl)})
+		return &Lease{Key: key, Token: token}, nil
 	}
-	return true, nil
+
+	m.locks.Store(key, lockItem{token: token, expiresAt: now.Add(ttl)})
+	return &Lease{Key: key, Token: token}, nil
 }
 
-// Unlock releases the lock for the given key, allowing other processes
-// to acquire it.
-func (m *MemoryStore) Unlock(_ context.Context, key string) error {
-	m.locks.Delete(key)
+// Unlock releases the lock identified by lease. It only deletes the entry when
+// the stored token matches the lease, so a caller whose lock already expired
+// and was re-acquired cannot release the new owner's lock.
+func (m *MemoryStore) Unlock(_ context.Context, lease *Lease) error {
+	if lease == nil {
+		return nil
+	}
+
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+
+	if val, ok := m.locks.Load(lease.Key); ok {
+		if val.(lockItem).token == lease.Token {
+			m.locks.Delete(lease.Key)
+		}
+	}
 	return nil
+}
+
+// Refresh extends the TTL of the lock identified by lease. It returns
+// ErrLockNotHeld when the lease is no longer the owner.
+func (m *MemoryStore) Refresh(_ context.Context, lease *Lease, ttl time.Duration) error {
+	if lease == nil {
+		return ErrLockNotHeld
+	}
+
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+
+	val, ok := m.locks.Load(lease.Key)
+	if !ok || val.(lockItem).token != lease.Token {
+		return ErrLockNotHeld
+	}
+	m.locks.Store(lease.Key, lockItem{token: lease.Token, expiresAt: time.Now().Add(ttl)})
+	return nil
+}
+
+// newLockToken returns a random, unguessable owner token for a lock.
+func newLockToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand should not fail; fall back to a time-based token so the
+		// lock still has a unique-enough owner rather than colliding.
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // StartEvictor launches a background goroutine that periodically scans the
