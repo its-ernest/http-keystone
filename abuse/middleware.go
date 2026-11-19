@@ -4,6 +4,7 @@ package abuse
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"time"
@@ -142,8 +143,12 @@ func New(config Config) echo.MiddlewareFunc {
 			}
 			key := "abuse:heat:" + clientID
 
-			// 1. Fetch current heat
-			currentScore, _ := config.Store.Get(ctx, key)
+			// 1. Fetch current heat. A missing key (ErrNotFound) means the
+			// client has no heat yet, so it is treated as zero.
+			currentScore, err := config.Store.Get(ctx, key)
+			if errors.Is(err, store.ErrNotFound) {
+				currentScore = 0
+			}
 
 			// 2. Immediate Block first: blocked clients are rejected without
 			// being parked in a tarpit sleep.

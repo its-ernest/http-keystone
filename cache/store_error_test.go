@@ -15,9 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// faultyStore wraps a Store and injects failures for selected methods.
+// faultyStore wraps a Store and injects failures for selected methods. It
+// also implements Locker so it satisfies the locking capability the cache
+// middleware type-asserts for.
 type faultyStore struct {
 	store.Store
+	store.Locker
 
 	getErr  error
 	saveErr error
@@ -42,12 +45,12 @@ func (s *faultyStore) Lock(ctx context.Context, key string, ttl time.Duration) (
 	if s.lockErr != nil {
 		return nil, s.lockErr
 	}
-	return s.Store.Lock(ctx, key, ttl)
+	return s.Locker.Lock(ctx, key, ttl)
 }
 
 func TestCacheGetErrorFailsOpen(t *testing.T) {
 	e := echo.New()
-	st := &faultyStore{Store: store.NewMemoryStore(), getErr: errors.New("store unavailable")}
+	st := &faultyStore{Store: store.NewMemoryStore(), Locker: store.NewMemoryStore(), getErr: errors.New("store unavailable")}
 	calls := 0
 
 	handler := New(Config{
@@ -72,7 +75,7 @@ func TestCacheGetErrorFailsOpen(t *testing.T) {
 
 func TestCacheSaveErrorFailsOpen(t *testing.T) {
 	e := echo.New()
-	st := &faultyStore{Store: store.NewMemoryStore(), saveErr: errors.New("disk full")}
+	st := &faultyStore{Store: store.NewMemoryStore(), Locker: store.NewMemoryStore(), saveErr: errors.New("disk full")}
 	calls := 0
 
 	handler := New(Config{Store: st, TTL: time.Minute})(func(c *echo.Context) error {
@@ -94,7 +97,7 @@ func TestCacheSaveErrorFailsOpen(t *testing.T) {
 
 func TestCacheLockErrorFailsOpen(t *testing.T) {
 	e := echo.New()
-	st := &faultyStore{Store: store.NewMemoryStore(), lockErr: errors.New("lock backend down")}
+	st := &faultyStore{Store: store.NewMemoryStore(), Locker: store.NewMemoryStore(), lockErr: errors.New("lock backend down")}
 	calls := 0
 
 	handler := New(Config{

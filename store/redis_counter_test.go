@@ -29,7 +29,7 @@ func TestRedisCounter_GetMissing(t *testing.T) {
 	counter, _ := newTestRedisCounter(t)
 
 	got, err := counter.Get(context.Background(), "missing")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
 	assert.Equal(t, 0, got)
 }
 
@@ -60,7 +60,7 @@ func TestRedisCounter_TTLExpires(t *testing.T) {
 	mr.FastForward(1500 * time.Millisecond)
 
 	got, err := counter.Get(ctx, "score")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
 	assert.Equal(t, 0, got)
 }
 
@@ -108,7 +108,7 @@ func TestRedisCounter_SubMillisecondTTLIsNotDropped(t *testing.T) {
 	mr.FastForward(5 * time.Millisecond)
 
 	got, err := counter.Get(ctx, "score")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
 	assert.Equal(t, 0, got)
 }
 
@@ -122,7 +122,7 @@ func TestRedisCounter_Reset(t *testing.T) {
 	require.NoError(t, counter.Reset(ctx, "score"))
 
 	got, err := counter.Get(ctx, "score")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
 	assert.Equal(t, 0, got)
 }
 

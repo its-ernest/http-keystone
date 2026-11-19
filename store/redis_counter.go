@@ -67,12 +67,12 @@ func NewRedisCounterWithClient(client *redis.Client) *RedisCounter {
 	return &RedisCounter{client: client}
 }
 
-// Get returns the current value for key. A missing or expired key returns 0
-// with a nil error, matching the in-memory Counter implementation.
+// Get returns the current value for key. A missing or expired key returns
+// ErrNotFound, matching the in-memory Counter implementation.
 func (c *RedisCounter) Get(ctx context.Context, key string) (int, error) {
 	value, err := c.client.Get(ctx, key).Int64()
 	if errors.Is(err, redis.Nil) {
-		return 0, nil
+		return 0, ErrNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("store: redis counter get %q: %w", key, err)
