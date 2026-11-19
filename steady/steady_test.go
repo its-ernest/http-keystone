@@ -104,7 +104,7 @@ func TestSteady(t *testing.T) {
 		he, ok := err.(*echo.HTTPError)
 		assert.True(t, ok)
 		assert.Equal(t, http.StatusServiceUnavailable, he.Code)
-		assert.Equal(t, "0", rec2.Header().Get("Retry-After")) // 50ms wait timeout rounds down to 0 seconds
+		assert.Equal(t, "1", rec2.Header().Get("Retry-After")) // Retry-After is never 0; a short WaitTimeout must not tell clients to retry immediately
 	})
 
 	t.Run("client cancellation", func(t *testing.T) {
