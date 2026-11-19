@@ -13,6 +13,7 @@ Package store provides the underlying persistence and locking mechanisms for the
 - [Variables](<#variables>)
 - [type Counter](<#Counter>)
 - [type Entry](<#Entry>)
+- [type Lease](<#Lease>)
 - [type MemoryCounter](<#MemoryCounter>)
   - [func NewMemoryCounter\(\) \*MemoryCounter](<#NewMemoryCounter>)
   - [func NewMemoryCounterWithLimit\(maxEntries int\) \*MemoryCounter](<#NewMemoryCounterWithLimit>)
@@ -26,10 +27,11 @@ Package store provides the underlying persistence and locking mechanisms for the
   - [func NewMemoryStore\(\) \*MemoryStore](<#NewMemoryStore>)
   - [func \(m \*MemoryStore\) Delete\(\_ context.Context, key string\) error](<#MemoryStore.Delete>)
   - [func \(m \*MemoryStore\) Get\(\_ context.Context, key string\) \(\*Entry, error\)](<#MemoryStore.Get>)
-  - [func \(m \*MemoryStore\) Lock\(\_ context.Context, key string, ttl time.Duration\) \(bool, error\)](<#MemoryStore.Lock>)
+  - [func \(m \*MemoryStore\) Lock\(\_ context.Context, key string, ttl time.Duration\) \(\*Lease, error\)](<#MemoryStore.Lock>)
+  - [func \(m \*MemoryStore\) Refresh\(\_ context.Context, lease \*Lease, ttl time.Duration\) error](<#MemoryStore.Refresh>)
   - [func \(m \*MemoryStore\) Save\(\_ context.Context, key string, entry \*Entry, ttl time.Duration\) error](<#MemoryStore.Save>)
   - [func \(m \*MemoryStore\) StartEvictor\(interval time.Duration, stop \<\-chan struct\{\}\)](<#MemoryStore.StartEvictor>)
-  - [func \(m \*MemoryStore\) Unlock\(\_ context.Context, key string\) error](<#MemoryStore.Unlock>)
+  - [func \(m \*MemoryStore\) Unlock\(\_ context.Context, lease \*Lease\) error](<#MemoryStore.Unlock>)
 - [type RedisCounter](<#RedisCounter>)
   - [func NewRedisCounter\(addr string\) \*RedisCounter](<#NewRedisCounter>)
   - [func NewRedisCounterWithClient\(client \*redis.Client\) \*RedisCounter](<#NewRedisCounterWithClient>)
@@ -45,10 +47,11 @@ Package store provides the underlying persistence and locking mechanisms for the
   - [func \(r \*RedisStore\) Close\(\) error](<#RedisStore.Close>)
   - [func \(r \*RedisStore\) Delete\(ctx context.Context, key string\) error](<#RedisStore.Delete>)
   - [func \(r \*RedisStore\) Get\(ctx context.Context, key string\) \(\*Entry, error\)](<#RedisStore.Get>)
-  - [func \(r \*RedisStore\) Lock\(ctx context.Context, key string, ttl time.Duration\) \(bool, error\)](<#RedisStore.Lock>)
+  - [func \(r \*RedisStore\) Lock\(ctx context.Context, key string, ttl time.Duration\) \(\*Lease, error\)](<#RedisStore.Lock>)
   - [func \(r \*RedisStore\) Ping\(ctx context.Context\) error](<#RedisStore.Ping>)
+  - [func \(r \*RedisStore\) Refresh\(ctx context.Context, lease \*Lease, ttl time.Duration\) error](<#RedisStore.Refresh>)
   - [func \(r \*RedisStore\) Save\(ctx context.Context, key string, entry \*Entry, ttl time.Duration\) error](<#RedisStore.Save>)
-  - [func \(r \*RedisStore\) Unlock\(ctx context.Context, key string\) error](<#RedisStore.Unlock>)
+  - [func \(r \*RedisStore\) Unlock\(ctx context.Context, lease \*Lease\) error](<#RedisStore.Unlock>)
 - [type RedisStoreOptions](<#RedisStoreOptions>)
 - [type Store](<#Store>)
 
@@ -64,10 +67,17 @@ var (
     // proceeding to the next handler to fetch fresh data.
     ErrNotFound = errors.New("store: item not found")
 
-    // ErrLockFailed is returned when a distributed lock cannot be acquired
-    // within the allowed timeframe or because it is already held by another
-    // process. This is primarily used by the idempotency middleware.
+    // ErrLockFailed is returned when a lock cannot be acquired because another
+    // owner currently holds it. Callers should treat it as "someone else is
+    // already doing this work" (for example, wait for the result or fail open).
     ErrLockFailed = errors.New("store: could not acquire lock")
+
+    // ErrLockNotHeld is returned when a lease is refreshed or operated on but
+    // is no longer the owner: it expired and may have been re-acquired by a
+    // different caller. Unlock treats this as a no-op, but Refresh reports it
+    // so a holder can react (stop work, retry) instead of assuming it still
+    // owns the lock.
+    ErrLockNotHeld = errors.New("store: lock is not held")
 )
 ```
 
@@ -78,7 +88,7 @@ var ErrCounterOverflow = errors.New("store: counter value overflows int")
 ```
 
 <a name="Counter"></a>
-## type [Counter](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L47-L57>)
+## type [Counter](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L76-L86>)
 
 Counter defines a simpler interface for numeric tracking \(Abuse, Rate Limiting\)
 
@@ -97,7 +107,7 @@ type Counter interface {
 ```
 
 <a name="Entry"></a>
-## type [Entry](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L22-L26>)
+## type [Entry](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L29-L33>)
 
 Entry represents the data that actually persists
 
@@ -106,6 +116,21 @@ type Entry struct {
     Status int                 `json:"status"`
     Header map[string][]string `json:"header"`
     Body   []byte              `json:"body"`
+}
+```
+
+<a name="Lease"></a>
+## type [Lease](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L39-L45>)
+
+Lease is an owned lock handed back by Store.Lock. The Token is an unguessable identifier for the owner; Unlock and Refresh compare it so a caller can never release or extend a lock that now belongs to someone else after its TTL expired and it was re\-acquired.
+
+```go
+type Lease struct {
+    // Key is the logical key the lock was acquired for.
+    Key string
+
+    // Token identifies the owner of the lock.
+    Token string
 }
 ```
 
@@ -193,7 +218,7 @@ func (m *MemoryCounter) StartEvictor(ctx context.Context, interval time.Duration
 StartEvictor launches a background goroutine that removes expired keys every interval, stopping when ctx is done or Close is called. It is safe to call more than once; later calls replace the previous evictor.
 
 <a name="MemoryStore"></a>
-## type [MemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L20-L23>)
+## type [MemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L23-L28>)
 
 MemoryStore is an in\-memory implementation of the Store interface. It utilizes sync.Map for thread\-safe data operations and distributed\-style locking simulations, making it ideal for single\-instance applications.
 
@@ -204,7 +229,7 @@ type MemoryStore struct {
 ```
 
 <a name="NewMemoryStore"></a>
-### func [NewMemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L32>)
+### func [NewMemoryStore](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L39>)
 
 ```go
 func NewMemoryStore() *MemoryStore
@@ -213,7 +238,7 @@ func NewMemoryStore() *MemoryStore
 NewMemoryStore initializes and returns a new pointer to a MemoryStore.
 
 <a name="MemoryStore.Delete"></a>
-### func \(\*MemoryStore\) [Delete](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L62>)
+### func \(\*MemoryStore\) [Delete](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L69>)
 
 ```go
 func (m *MemoryStore) Delete(_ context.Context, key string) error
@@ -222,7 +247,7 @@ func (m *MemoryStore) Delete(_ context.Context, key string) error
 Delete removes a specific entry from the memory store immediately.
 
 <a name="MemoryStore.Get"></a>
-### func \(\*MemoryStore\) [Get](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L38>)
+### func \(\*MemoryStore\) [Get](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L45>)
 
 ```go
 func (m *MemoryStore) Get(_ context.Context, key string) (*Entry, error)
@@ -231,16 +256,25 @@ func (m *MemoryStore) Get(_ context.Context, key string) (*Entry, error)
 Get retrieves a cached Entry by its key. If the entry exists but has expired, it is deleted and ErrNotFound is returned.
 
 <a name="MemoryStore.Lock"></a>
-### func \(\*MemoryStore\) [Lock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L71>)
+### func \(\*MemoryStore\) [Lock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L79>)
 
 ```go
-func (m *MemoryStore) Lock(_ context.Context, key string, ttl time.Duration) (bool, error)
+func (m *MemoryStore) Lock(_ context.Context, key string, ttl time.Duration) (*Lease, error)
 ```
 
-Lock attempts to acquire a non\-blocking lock for a given key. It returns true if the lock was successfully acquired or if a previous lock has already expired. This is essential for preventing "thundering herd" issues in idempotency middleware.
+Lock attempts to acquire an owned, non\-blocking lock for a given key. It returns a Lease identifying the owner, or ErrLockFailed if another caller holds a live lock. An expired lock may be taken over atomically: the check and the overwrite happen under one mutex, so two goroutines can never both observe the same expired lock and both succeed.
+
+<a name="MemoryStore.Refresh"></a>
+### func \(\*MemoryStore\) [Refresh](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L122>)
+
+```go
+func (m *MemoryStore) Refresh(_ context.Context, lease *Lease, ttl time.Duration) error
+```
+
+Refresh extends the TTL of the lock identified by lease. It returns ErrLockNotHeld when the lease is no longer the owner.
 
 <a name="MemoryStore.Save"></a>
-### func \(\*MemoryStore\) [Save](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L53>)
+### func \(\*MemoryStore\) [Save](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L60>)
 
 ```go
 func (m *MemoryStore) Save(_ context.Context, key string, entry *Entry, ttl time.Duration) error
@@ -249,7 +283,7 @@ func (m *MemoryStore) Save(_ context.Context, key string, entry *Entry, ttl time
 Save persists an Entry into memory with a specific time\-to\-live \(TTL\).
 
 <a name="MemoryStore.StartEvictor"></a>
-### func \(\*MemoryStore\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L101>)
+### func \(\*MemoryStore\) [StartEvictor](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L152>)
 
 ```go
 func (m *MemoryStore) StartEvictor(interval time.Duration, stop <-chan struct{})
@@ -258,13 +292,13 @@ func (m *MemoryStore) StartEvictor(interval time.Duration, stop <-chan struct{})
 StartEvictor launches a background goroutine that periodically scans the store and removes expired entries. The goroutine stops when the provided stop channel is closed.
 
 <a name="MemoryStore.Unlock"></a>
-### func \(\*MemoryStore\) [Unlock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L93>)
+### func \(\*MemoryStore\) [Unlock](<https://github.com/its-ernest/http-keystone/blob/main/store/memory.go#L104>)
 
 ```go
-func (m *MemoryStore) Unlock(_ context.Context, key string) error
+func (m *MemoryStore) Unlock(_ context.Context, lease *Lease) error
 ```
 
-Unlock releases the lock for the given key, allowing other processes to acquire it.
+Unlock releases the lock identified by lease. It only deletes the entry when the stored token matches the lease, so a caller whose lock already expired and was re\-acquired cannot release the new owner's lock.
 
 <a name="RedisCounter"></a>
 ## type [RedisCounter](<https://github.com/its-ernest/http-keystone/blob/main/store/redis_counter.go#L23-L26>)
@@ -381,7 +415,7 @@ func NewRedisStoreWithOptions(opts RedisStoreOptions) *RedisStore
 NewRedisStoreWithOptions creates a new RedisStore with custom configuration.
 
 <a name="RedisStore.Close"></a>
-### func \(\*RedisStore\) [Close](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L115>)
+### func \(\*RedisStore\) [Close](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L163>)
 
 ```go
 func (r *RedisStore) Close() error
@@ -408,22 +442,31 @@ func (r *RedisStore) Get(ctx context.Context, key string) (*Entry, error)
 Get retrieves a cached Entry by its key from Redis. Returns ErrNotFound if the key does not exist or has expired.
 
 <a name="RedisStore.Lock"></a>
-### func \(\*RedisStore\) [Lock](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L103>)
+### func \(\*RedisStore\) [Lock](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L123>)
 
 ```go
-func (r *RedisStore) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+func (r *RedisStore) Lock(ctx context.Context, key string, ttl time.Duration) (*Lease, error)
 ```
 
-Lock attempts to acquire a distributed lock for a given key using SET NX. This is atomic and prevents race conditions in distributed environments. Returns true if the lock was successfully acquired.
+Lock attempts to acquire an owned lock for key using SET NX with a unique token, so the lock is atomic and carries its owner. It returns ErrLockFailed when another owner holds a live lock.
 
 <a name="RedisStore.Ping"></a>
-### func \(\*RedisStore\) [Ping](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L121>)
+### func \(\*RedisStore\) [Ping](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L169>)
 
 ```go
 func (r *RedisStore) Ping(ctx context.Context) error
 ```
 
 Ping verifies that the Redis server is reachable. It is useful for readiness checks and for failing fast when the configured address is wrong.
+
+<a name="RedisStore.Refresh"></a>
+### func \(\*RedisStore\) [Refresh](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L147>)
+
+```go
+func (r *RedisStore) Refresh(ctx context.Context, lease *Lease, ttl time.Duration) error
+```
+
+Refresh extends the TTL of the lock identified by lease. It returns ErrLockNotHeld when the lease is no longer the owner.
 
 <a name="RedisStore.Save"></a>
 ### func \(\*RedisStore\) [Save](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L87>)
@@ -435,13 +478,13 @@ func (r *RedisStore) Save(ctx context.Context, key string, entry *Entry, ttl tim
 Save persists an Entry into Redis with a specific time\-to\-live \(TTL\).
 
 <a name="RedisStore.Unlock"></a>
-### func \(\*RedisStore\) [Unlock](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L109>)
+### func \(\*RedisStore\) [Unlock](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L138>)
 
 ```go
-func (r *RedisStore) Unlock(ctx context.Context, key string) error
+func (r *RedisStore) Unlock(ctx context.Context, lease *Lease) error
 ```
 
-Unlock releases the lock for the given key.
+Unlock releases the lock identified by lease using a compare\-and\-delete, so a caller whose lock already expired and was re\-acquired by someone else cannot delete the new owner's lock.
 
 <a name="RedisStoreOptions"></a>
 ## type [RedisStoreOptions](<https://github.com/its-ernest/http-keystone/blob/main/store/redis.go#L20-L37>)
@@ -470,7 +513,7 @@ type RedisStoreOptions struct {
 ```
 
 <a name="Store"></a>
-## type [Store](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L29-L44>)
+## type [Store](<https://github.com/its-ernest/http-keystone/blob/main/store/store.go#L48-L73>)
 
 Store defines the contract for any backend \(Memory, Redis, etc.\)
 
@@ -485,11 +528,21 @@ type Store interface {
     // Delete removes an entry
     Delete(ctx context.Context, key string) error
 
-    // Lock attempts to acquire a distributed lock for a key (crucial for Idempotency)
-    Lock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+    // Lock attempts to acquire an owned lock for key that expires after ttl.
+    // On success it returns a Lease identifying the owner. It returns
+    // ErrLockFailed when another owner holds a live lock for the key. A
+    // non-positive ttl creates a lock that does not expire on its own.
+    Lock(ctx context.Context, key string, ttl time.Duration) (*Lease, error)
 
-    // Unlock releases the lock
-    Unlock(ctx context.Context, key string) error
+    // Unlock releases the lock identified by lease. Unlocking with a lease
+    // that is no longer the owner (it expired and was re-acquired) is a no-op
+    // and never releases the current owner's lock.
+    Unlock(ctx context.Context, lease *Lease) error
+
+    // Refresh extends the TTL of the lock identified by lease. It returns
+    // ErrLockNotHeld when the lease is no longer the owner. A non-positive ttl
+    // makes the lock stop expiring on its own.
+    Refresh(ctx context.Context, lease *Lease, ttl time.Duration) error
 }
 ```
 

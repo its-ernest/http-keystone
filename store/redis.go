@@ -97,17 +97,65 @@ func (r *RedisStore) Delete(ctx context.Context, key string) error {
 	return r.client.Del(ctx, key).Err()
 }
 
-// Lock attempts to acquire a distributed lock for a given key using SET NX.
-// This is atomic and prevents race conditions in distributed environments.
-// Returns true if the lock was successfully acquired.
-func (r *RedisStore) Lock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	// Use SET NX (Set if Not eXists) with expiration for atomic locking
-	return r.client.SetNX(ctx, "lock:"+key, "1", ttl).Result()
+// lockTokenScript releases a lock only if the stored value still matches the
+// caller's token (compare-and-delete). It returns 1 when the lock was
+// released, 0 when it was not owned by the caller.
+var lockTokenScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("del", KEYS[1])
+else
+	return 0
+end
+`)
+
+// lockRefreshScript extends a lock's TTL only if the caller still owns it.
+var lockRefreshScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("pexpire", KEYS[1], ARGV[2])
+else
+	return 0
+end
+`)
+
+// Lock attempts to acquire an owned lock for key using SET NX with a unique
+// token, so the lock is atomic and carries its owner. It returns ErrLockFailed
+// when another owner holds a live lock.
+func (r *RedisStore) Lock(ctx context.Context, key string, ttl time.Duration) (*Lease, error) {
+	token := newLockToken()
+	ok, err := r.client.SetNX(ctx, "lock:"+key, token, ttl).Result()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrLockFailed
+	}
+	return &Lease{Key: key, Token: token}, nil
 }
 
-// Unlock releases the lock for the given key.
-func (r *RedisStore) Unlock(ctx context.Context, key string) error {
-	return r.client.Del(ctx, "lock:"+key).Err()
+// Unlock releases the lock identified by lease using a compare-and-delete, so
+// a caller whose lock already expired and was re-acquired by someone else
+// cannot delete the new owner's lock.
+func (r *RedisStore) Unlock(ctx context.Context, lease *Lease) error {
+	if lease == nil {
+		return nil
+	}
+	return lockTokenScript.Run(ctx, r.client, []string{"lock:" + lease.Key}, lease.Token).Err()
+}
+
+// Refresh extends the TTL of the lock identified by lease. It returns
+// ErrLockNotHeld when the lease is no longer the owner.
+func (r *RedisStore) Refresh(ctx context.Context, lease *Lease, ttl time.Duration) error {
+	if lease == nil {
+		return ErrLockNotHeld
+	}
+	n, err := lockRefreshScript.Run(ctx, r.client, []string{"lock:" + lease.Key}, lease.Token, ttl.Milliseconds()).Int()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrLockNotHeld
+	}
+	return nil
 }
 
 // Close closes the Redis connection pool.

@@ -8,6 +8,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func setupRedisTest(t *testing.T) (*RedisStore, *miniredis.Miniredis) {
@@ -118,23 +119,22 @@ func TestRedisStore_LockAndUnlock(t *testing.T) {
 	ctx := context.Background()
 
 	// Acquire lock
-	acquired, err := store.Lock(ctx, "resource-1", time.Minute)
+	lease, err := store.Lock(ctx, "resource-1", time.Minute)
 	assert.NoError(t, err)
-	assert.True(t, acquired)
+	require.NotNil(t, lease)
 
 	// Try to acquire same lock again (should fail)
-	acquired, err = store.Lock(ctx, "resource-1", time.Minute)
-	assert.NoError(t, err)
-	assert.False(t, acquired)
+	_, err = store.Lock(ctx, "resource-1", time.Minute)
+	assert.ErrorIs(t, err, ErrLockFailed)
 
 	// Release lock
-	err = store.Unlock(ctx, "resource-1")
+	err = store.Unlock(ctx, lease)
 	assert.NoError(t, err)
 
 	// Try to acquire lock again (should succeed)
-	acquired, err = store.Lock(ctx, "resource-1", time.Minute)
+	lease, err = store.Lock(ctx, "resource-1", time.Minute)
 	assert.NoError(t, err)
-	assert.True(t, acquired)
+	require.NotNil(t, lease)
 }
 
 func TestRedisStore_LockExpiration(t *testing.T) {
@@ -145,17 +145,23 @@ func TestRedisStore_LockExpiration(t *testing.T) {
 	ctx := context.Background()
 
 	// Acquire lock with short TTL
-	acquired, err := store.Lock(ctx, "resource-1", 100*time.Millisecond)
+	lease, err := store.Lock(ctx, "resource-1", 100*time.Millisecond)
 	assert.NoError(t, err)
-	assert.True(t, acquired)
+	require.NotNil(t, lease)
 
 	// Fast-forward time to expire the lock
 	mr.FastForward(150 * time.Millisecond)
 
 	// Lock should have expired, can acquire again
-	acquired, err = store.Lock(ctx, "resource-1", time.Minute)
+	lease2, err := store.Lock(ctx, "resource-1", time.Minute)
 	assert.NoError(t, err)
-	assert.True(t, acquired)
+	require.NotNil(t, lease2)
+
+	// The stale lease must not release the new owner's lock.
+	assert.NoError(t, store.Unlock(ctx, lease))
+	lease3, err := store.Lock(ctx, "resource-1", time.Minute)
+	assert.ErrorIs(t, err, ErrLockFailed, "unlocking with a stale token must not release the new owner")
+	assert.Nil(t, lease3)
 }
 
 func TestNewRedisStoreWithOptions(t *testing.T) {
