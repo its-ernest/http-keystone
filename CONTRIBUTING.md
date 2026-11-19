@@ -41,6 +41,7 @@ First off, thank you for considering contributing to `http-keystone`! It is thro
 
 * **Atomic Commits:** Keep your changes focused. One feature/fix per PR.
 * **Documentation:** Update the `README.md` and provide inline GoDoc comments for public functions.
+* **Update docs files:**: See to it to run `make docs` to generate updated docs for Go files. Failure to do so would almost always yield failed CI tests 
 * **Formatting:** Run `go fmt ./...` before committing.
 * **Wait for Review:** We aim to review PRs within 48 hours.
 
