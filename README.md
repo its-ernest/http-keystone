@@ -26,6 +26,7 @@ Then import the packages you need:
 import (
 	"github.com/its-ernest/http-keystone/abuse"
 	"github.com/its-ernest/http-keystone/cache"
+	"github.com/its-ernest/http-keystone/idempotency"
 	"github.com/its-ernest/http-keystone/steady"
 	"github.com/its-ernest/http-keystone/store"
 )
@@ -47,6 +48,7 @@ To ensure stability across the evolving Echo v5 landscape, we maintain specific 
 | :--- | :--- | :--- | :--- |
 | **[`http-keystone/cache`](cache/README.md)** | RFC-compliant HTTP caching | `Stable` | - `Memory`. <br> - `Redis`. |
 | **[`http-keystone/abuse`](abuse/README.md)** | API abuse detection | `Stable` | - `Memory`. <br> `Redis`. |
+| **[`http-keystone/idempotency`](idempotency/README.md)** | Safe retries for unsafe methods | `Stable` | - `Memory`. <br> - `Redis`. |
 | **[`http-keystone/steady`](steady/README.md)** | Concurrency limit and backpressure | `Beta` | `Channel-based`|
 
 
@@ -61,11 +63,13 @@ To ensure stability across the evolving Echo v5 landscape, we maintain specific 
 - Read [CONTRIBUTION.md](CONTRIBUTING.md)
 - Contributing on cache middleware: [cache/README.md](cache/README.md)
 - Contributing on API abuse middleware: [abuse/README.md](abuse/README.md)
+- Contributing on idempotency middleware: [idempotency/README.md](idempotency/README.md)
 - Contributing on Steady/Semaphore middleware: [steady/README.md](steady/README.md)
 
 ## MINI PROJECTS EXAMPLES: 
 
 * **OTP verification caching (MemoryStore)**: [_examples/cache/otp_code_verification](_examples/cache/otp_code_verification/README.md)
+* **Idempotent payments (MemoryStore)**: [_examples/idempotency](_examples/idempotency/README.md)
 
 
 ## Quick Start examples
@@ -183,6 +187,25 @@ For production environments with multiple application instances, use RedisStore:
 
 	e.GET("/", func(c *echo.Context) error {
 		return c.String(http.StatusOK, "Stable and Steady!")
+	})
+	// rest of code...
+```
+
+### Idempotency (safe retries) examples
+```go
+	// ...
+	e := echo.New()
+
+	// Make POST/PUT/PATCH/DELETE safe to retry: the first request with a
+	// given Idempotency-Key runs the handler, later retries replay its result.
+	e.Use(idempotency.New(idempotency.Config{
+		Store: store.NewMemoryStore(),
+		TTL:   24 * time.Hour,
+	}))
+
+	e.POST("/payments", func(c *echo.Context) error {
+		// Runs once per Idempotency-Key, even if the client retries.
+		return c.String(http.StatusCreated, "payment created")
 	})
 	// rest of code...
 ```
